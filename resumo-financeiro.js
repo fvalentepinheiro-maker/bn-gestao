@@ -13,7 +13,7 @@
     if (cache && Date.now() - cacheAt < 20000) return cache;
     var s = sess(); if (!s) return [];
     try {
-      var r = await fetch(API + '/rest/v1/cm_fin_entries?select=kind,amount,competence,status_fin',
+      var r = await fetch(API + '/rest/v1/cm_fin_entries?select=kind,amount,competence,status_fin,is_aporte',
         { headers: { apikey: KEY, Authorization: 'Bearer ' + s.access_token } });
       if (!r.ok) return []; cache = await r.json(); cacheAt = Date.now(); return cache;
     } catch (e) { return []; }
@@ -26,7 +26,7 @@
     data.forEach(function (e) {
       if (!e.competence || e.competence.slice(0, 4) !== y) return;
       var m = parseInt(e.competence.slice(5, 7)) - 1, a = Number(e.amount) || 0, st = e.status_fin || 'liquidado';
-      if (e.kind === 'entrada') { fat += a; rec[m] += a; if (st === 'liquidado') liqE += a; else if (st === 'aberto') abE += a; }
+      if (e.kind === 'entrada') { if (e.is_aporte) return; fat += a; rec[m] += a; if (st === 'liquidado') liqE += a; else if (st === 'aberto') abE += a; }
       else { desp += a; dsp[m] += a; if (st === 'liquidado') liqD += a; else if (st === 'aberto') abD += a; }
     });
     var liq = fat - desp, liquidado = liqE - liqD, aberto = abE - abD;

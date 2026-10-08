@@ -136,7 +136,7 @@ function mesAMes(){
   const y=state.year||[];
   const M=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const rec=Array(12).fill(0), desp=Array(12).fill(0);
-  for(const e of y){const m=parseInt(e.competence.slice(5,7))-1; if(m>=0&&m<12){ if(e.kind==='entrada')rec[m]+=Number(e.amount); else desp[m]+=Number(e.amount);}}
+  for(const e of y){const m=parseInt(e.competence.slice(5,7))-1; if(m>=0&&m<12){ if(e.kind==='entrada'){if(!e.is_aporte)rec[m]+=Number(e.amount);} else desp[m]+=Number(e.amount);}}
   const max=Math.max(1,...rec,...desp);
   let rows='';
   for(let i=0;i<12;i++){
@@ -196,13 +196,13 @@ async function loadEntries(){
 function render(){
   if(!state.sess){return renderLogin();}
   const ents=state.entries.filter(e=>e.kind==='entrada'), desps=state.entries.filter(e=>e.kind==='despesa');
-  const totE=ents.reduce((s,e)=>s+Number(e.amount),0);
+  const totE=ents.filter(e=>!e.is_aporte).reduce((s,e)=>s+Number(e.amount),0);
   const totD=desps.reduce((s,e)=>s+Number(e.amount),0);
   const totAp=ents.filter(e=>e.is_aporte).reduce((s,e)=>s+Number(e.amount),0);
   const saldo=totE-totD;
   const yEnt=state.year||[], stOf=e=>(e.status_fin||'liquidado');
-  const sumK=(kind,st)=>yEnt.filter(e=>e.kind===kind&&stOf(e)===st).reduce((s,e)=>s+Number(e.amount),0);
-  const recAno=yEnt.filter(e=>e.kind==='entrada').reduce((s,e)=>s+Number(e.amount),0);
+  const sumK=(kind,st)=>yEnt.filter(e=>e.kind===kind&&stOf(e)===st&&!(kind==='entrada'&&e.is_aporte)).reduce((s,e)=>s+Number(e.amount),0);
+  const recAno=yEnt.filter(e=>e.kind==='entrada'&&!e.is_aporte).reduce((s,e)=>s+Number(e.amount),0);
   const despAno=yEnt.filter(e=>e.kind==='despesa').reduce((s,e)=>s+Number(e.amount),0);
   const liquidado=sumK('entrada','liquidado')-sumK('despesa','liquidado');
   const emAberto=sumK('entrada','aberto')-sumK('despesa','aberto');
