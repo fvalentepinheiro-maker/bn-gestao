@@ -110,6 +110,51 @@ async function loadAll(){
     rows('cm_contracts','&select=id,contract_number,supplier_name&order=supplier_name')
   ]);
   await loadEntries();
+  await loadTetos();
+}
+async function loadTetos(){
+  state.cteto=await req('/rest/v1/cm_contracts?select=id,contract_number,supplier_name,teto_qtd,valor_norte&teto_qtd=not.is.null&order=contract_number.asc');
+  const slots=await req('/rest/v1/cm_schedule_slots?select=contract_id,patients,status&contract_id=not.is.null');
+  state.consumo={};
+  for(const s of slots){if(['preenchido','confirmado'].includes(s.status))state.consumo[s.contract_id]=(state.consumo[s.contract_id]||0)+Number(s.patients||0);}
+  const fins=await req('/rest/v1/cm_fin_entries?select=kind,amount,contract_id&contract_id=not.is.null');
+  state.finAgg={};
+  for(const f of fins){const a=state.finAgg[f.contract_id]||{rec:0,desp:0};if(f.kind==='entrada')a.rec+=Number(f.amount);else a.desp+=Number(f.amount);state.finAgg[f.contract_id]=a;}
+}
+function tetoTable(){
+  const list=state.cteto||[];
+  if(!list.length)return '<div class="vazio">Nenhum contrato com teto definido.</div>';
+  const row=c=>{
+    const cons=state.consumo[c.id]||0, saldo=(c.teto_qtd||0)-cons;
+    const ag=state.finAgg[c.id]||{rec:0,desp:0};
+    const norte=(c.teto_qtd||0)*Number(c.valor_norte||0), liq=ag.rec-ag.desp;
+    const pct=c.teto_qtd?Math.min(100,Math.round(cons/c.teto_qtd*100)):0;
+    return `<tr>
+      <td>${esc(c.contract_number)}<br><small style="color:var(--cinza)">${esc(c.supplier_name)}</small></td>
+      <td class="r">${c.teto_qtd||0}</td><td class="r">${cons}</td>
+      <td class="r" style="color:${saldo<0?'var(--vermelho)':'var(--verde)'}">${saldo} <small style="color:var(--cinza)">(${pct}%)</small></td>
+      <td class="r">${money(norte)}</td><td class="r">${money(ag.rec)}</td><td class="r">${money(ag.desp)}</td>
+      <td class="r" style="color:${liq<0?'var(--vermelho)':'var(--verde)'}">${money(liq)}</td>
+      <td class="acts r">${canEdit()?`<button data-teto="${c.id}">✏️</button>`:''}</td></tr>`;
+  };
+  return `<table><thead><tr><th>Contrato</th><th class="r">Teto</th><th class="r">Consumido</th><th class="r">Saldo</th><th class="r">Norte</th><th class="r">Recebido</th><th class="r">Despesas</th><th class="r">Líquido</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
+}
+function openTeto(id){
+  const c=state.cteto.find(x=>x.id===id);
+  modal.innerHTML=`<h3>Teto — ${esc(c.contract_number)}</h3>
+    <div class="row2">
+      <div class="field"><label>Teto (atendimentos)</label><input type="number" id="t_qtd" value="${c.teto_qtd||''}"></div>
+      <div class="field"><label>Valor-norte (R$/atend.)</label><input type="number" step="0.01" id="t_val" value="${c.valor_norte||''}"></div>
+    </div><div class="err" id="t_err"></div>
+    <div class="acts2"><button class="btn" id="t_cancel">Cancelar</button><button class="btn prim" id="t_save">Salvar</button></div>`;
+  ov.classList.add('on');
+  document.getElementById('t_cancel').onclick=()=>ov.classList.remove('on');
+  document.getElementById('t_save').onclick=async()=>{
+    const body={teto_qtd:parseInt(document.getElementById('t_qtd').value)||null,valor_norte:parseFloat(document.getElementById('t_val').value)||null};
+    try{await req('/rest/v1/cm_contracts?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body});
+      ov.classList.remove('on');await loadTetos();render();}
+    catch(e){document.getElementById('t_err').textContent=e.message;}
+  };
 }
 async function loadEntries(){
   state.entries=await req('/rest/v1/cm_fin_entries?select=*&competence=eq.'+comp(state.month)+'&order=entry_date.asc');
@@ -154,6 +199,7 @@ function render(){
     </div>
     <h2>Entradas</h2>${tbl(ents,'Sem entradas neste mês.')}
     <h2>Despesas</h2>${tbl(desps,'Sem despesas neste mês.')}
+    <h2>Por contrato — teto &amp; resultado <small style="color:var(--cinza);font-weight:400">(acumulado, não só o mês)</small></h2>${tetoTable()}
   </div>`;
   document.getElementById('mon').onchange=async e=>{state.month=e.target.value;await loadEntries();render();};
   document.getElementById('out').onclick=()=>{setSess(null);state.profile=null;render();};
@@ -161,6 +207,7 @@ function render(){
   document.getElementById('addD')?.addEventListener('click',()=>openForm('despesa'));
   app.querySelectorAll('[data-ed]').forEach(b=>b.onclick=()=>{const e=state.entries.find(x=>x.id===b.dataset.ed);openForm(e.kind,e);});
   app.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delEntry(b.dataset.del));
+  app.querySelectorAll('[data-teto]').forEach(b=>b.onclick=()=>openTeto(b.dataset.teto));
 }
 
 function openForm(kind,e=null){
