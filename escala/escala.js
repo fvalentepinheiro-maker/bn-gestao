@@ -79,13 +79,14 @@ async function loadProfile() {
 
 // ---- carga de dados ----
 async function loadData() {
-  const [units, rates, phys, pu] = await Promise.all([
+  const [units, rates, phys, pu, contracts] = await Promise.all([
     rows('cm_schedule_units', '&order=display_order'),
     rows('cm_schedule_period_rates'),
     rows('cm_physicians', '&order=full_name'),
     rows('cm_physician_units'),
+    rows('cm_contracts', '&select=id,contract_number,supplier_name&order=supplier_name'),
   ]);
-  state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || [];
+  state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || []; state.contracts = contracts || [];
   await loadMonth();
 }
 async function loadMonth() {
@@ -149,6 +150,7 @@ function render() {
     ...state.units.map(u => [u.slug, u.name]),
     ['financeiro', '💰 Repasse / Financeiro'],
     ['medicos', '👩‍⚕️ Médicos'],
+    ['servicos', '⚙️ Serviços'],
   ];
   app.innerHTML = `
     <header>
@@ -169,6 +171,7 @@ function render() {
   const p = document.getElementById('painel');
   if (state.tab === 'financeiro') renderFinanceiro(p);
   else if (state.tab === 'medicos') renderMedicos(p);
+  else if (state.tab === 'servicos') renderServicos(p);
   else renderGrade(p, unitBySlug(state.tab));
 }
 
@@ -282,6 +285,7 @@ function renderMedicos(el) {
       <td>${esc(p.full_name)}</td><td>${esc(p.crm || '—')}</td><td>${esc(p.specialty || '—')}</td>
       <td>${esc(p.phone || '—')}</td><td>${units.map(esc).join(', ') || '—'}</td>
       <td>${p.is_active ? '<span class="chip completo">ativo</span>' : '<span class="chip pendente">inativo</span>'}</td>
+      ${canEdit() ? `<td><select id="vu_${p.id}"><option value="">unidade…</option>${state.units.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select> <button class="btn" onclick="BN.vincular('${p.id}')">+</button></td>` : ''}
     </tr>`;
   }).join('');
   el.innerHTML = `
@@ -290,11 +294,38 @@ function renderMedicos(el) {
       <label>CRM<input type="text" id="novoMedCrm" placeholder="CRM"></label>
       <label>Especialidade<input type="text" id="novoMedEsp" placeholder="Especialidade"></label>
       <label>Telefone<input type="text" id="novoMedTel" placeholder="(91) ..."></label>
+      <label>Unidade<select id="novoMedUnit"><option value="">— vincular a —</option>${state.units.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></label>
       <button class="btn primario" onclick="BN.addMedico()">Cadastrar médico</button>
     </div>` : ''}
     <table>
-      <thead><tr><th>Médico</th><th>CRM</th><th>Especialidade</th><th>Telefone</th><th>Unidades</th><th>Situação</th></tr></thead>
-      <tbody>${linhas || '<tr><td colspan="6" class="vazio-aviso">Nenhum médico cadastrado.</td></tr>'}</tbody>
+      <thead><tr><th>Médico</th><th>CRM</th><th>Especialidade</th><th>Telefone</th><th>Unidades</th><th>Situação</th>${canEdit() ? '<th>Vincular</th>' : ''}</tr></thead>
+      <tbody>${linhas || '<tr><td colspan="7" class="vazio-aviso">Nenhum médico cadastrado.</td></tr>'}</tbody>
+    </table>`;
+}
+
+// ---- cadastro de serviços / unidades ----
+function slugify(s) { return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40); }
+function renderServicos(el) {
+  const contrName = id => { const c = (state.contracts || []).find(c => c.id === id); return c ? `${c.contract_number} · ${c.supplier_name}` : '—'; };
+  const linhas = state.units.map(u => {
+    const rs = ratesOf(u.id).map(r => `${esc(r.period_label)}: ${money(r.billing_per_patient)} / ${money(r.transfer_per_patient)}`).join('<br>');
+    return `<tr><td>${esc(u.name)}</td><td>${esc(contrName(u.contract_id))}</td><td>${((u.tax_rate || 0) * 100).toFixed(0)}%</td><td>${rs || '—'}</td></tr>`;
+  }).join('');
+  const contrOpts = ['<option value="">— contrato —</option>', ...(state.contracts || []).map(c => `<option value="${c.id}">${esc(c.contract_number)} · ${esc(c.supplier_name)}</option>`)].join('');
+  el.innerHTML = `
+    ${canEdit() ? `<div class="row-form">
+      <label>Serviço/Unidade<input type="text" id="svNome" placeholder="Ex.: Mãe do Rio"></label>
+      <label>Contrato<select id="svContr">${contrOpts}</select></label>
+      <label>Imposto %<input type="number" id="svTax" value="17" style="width:70px"></label>
+      <label>Manhã fat.<input type="number" id="svMF" value="0" style="width:80px"></label>
+      <label>Manhã rep.<input type="number" id="svMR" value="0" style="width:80px"></label>
+      <label>Tarde fat.<input type="number" id="svTF" value="0" style="width:80px"></label>
+      <label>Tarde rep.<input type="number" id="svTR" value="0" style="width:80px"></label>
+      <button class="btn primario" onclick="BN.addServico()">Cadastrar serviço</button>
+    </div>` : ''}
+    <table>
+      <thead><tr><th>Serviço / Unidade</th><th>Contrato</th><th>Imposto</th><th>Turnos (faturamento / repasse por paciente)</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="4" class="vazio-aviso">Nenhum serviço cadastrado.</td></tr>'}</tbody>
     </table>`;
 }
 
@@ -375,8 +406,38 @@ const BN = {
         specialty: document.getElementById('novoMedEsp').value.trim() || null,
         phone: document.getElementById('novoMedTel').value.trim() || null,
       }, 'id');
-      state.physicians.push(p); state.physicians.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      const uid = document.getElementById('novoMedUnit').value;
+      if (uid) await upsert('cm_physician_units', { physician_id: p.id, unit_id: uid }, 'physician_id,unit_id');
+      await loadData();
       toast('Médico cadastrado.'); render();
+    } catch (e) { toast(e.message, true); }
+  },
+  async vincular(physId) {
+    const uid = document.getElementById('vu_' + physId)?.value;
+    if (!uid) { toast('Escolha a unidade.', true); return; }
+    try {
+      await upsert('cm_physician_units', { physician_id: physId, unit_id: uid }, 'physician_id,unit_id');
+      await loadData(); toast('Médico vinculado.'); render();
+    } catch (e) { toast(e.message, true); }
+  },
+  async addServico() {
+    const nome = document.getElementById('svNome').value.trim();
+    if (!nome) { toast('Informe o nome do serviço.', true); return; }
+    const slug = slugify(nome);
+    if (!slug) { toast('Nome inválido.', true); return; }
+    if (state.units.some(u => u.slug === slug)) { toast('Já existe um serviço com esse nome.', true); return; }
+    const num = id => parseFloat(document.getElementById(id).value) || 0;
+    const ord = Math.max(0, ...state.units.map(u => u.display_order || 0)) + 1;
+    try {
+      const [u] = await upsert('cm_schedule_units', {
+        name: nome, slug, color: '#0a7fa8', tax_rate: num('svTax') / 100,
+        display_order: ord, contract_id: document.getElementById('svContr').value || null,
+      }, 'slug');
+      await upsert('cm_schedule_period_rates', [
+        { unit_id: u.id, period_key: 'manha', period_label: 'Manhã', billing_per_patient: num('svMF'), transfer_per_patient: num('svMR'), display_order: 1 },
+        { unit_id: u.id, period_key: 'tarde', period_label: 'Tarde', billing_per_patient: num('svTF'), transfer_per_patient: num('svTR'), display_order: 2 },
+      ], 'unit_id,period_key');
+      await loadData(); toast('Serviço cadastrado.'); render();
     } catch (e) { toast(e.message, true); }
   },
 };
