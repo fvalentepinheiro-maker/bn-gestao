@@ -132,6 +132,28 @@ async function loadYear(){
   try{const d=await req('/rest/v1/cm_fin_entries?select=amount&kind=eq.despesa&status_fin=eq.dea');
     state.deaTotal=d.reduce((s,e)=>s+Number(e.amount),0);}catch{state.deaTotal=0;}
 }
+function mesAMes(){
+  const y=state.year||[];
+  const M=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const rec=Array(12).fill(0), desp=Array(12).fill(0);
+  for(const e of y){const m=parseInt(e.competence.slice(5,7))-1; if(m>=0&&m<12){ if(e.kind==='entrada')rec[m]+=Number(e.amount); else desp[m]+=Number(e.amount);}}
+  const max=Math.max(1,...rec,...desp);
+  let rows='';
+  for(let i=0;i<12;i++){
+    if(!rec[i]&&!desp[i])continue;
+    const s=rec[i]-desp[i];
+    rows+=`<tr><td>${M[i]}</td>
+      <td class="r" style="color:var(--verde)">${money(rec[i])}</td>
+      <td class="r" style="color:var(--vermelho)">${money(desp[i])}</td>
+      <td class="r" style="color:${s<0?'var(--vermelho)':'var(--azul)'}">${money(s)}</td>
+      <td><div style="display:flex;gap:3px;align-items:flex-end;height:24px">
+        <div title="Receita" style="width:12px;border-radius:2px;background:var(--verde);height:${Math.max(2,Math.round(rec[i]/max*24))}px"></div>
+        <div title="Despesa" style="width:12px;border-radius:2px;background:var(--vermelho);height:${Math.max(2,Math.round(desp[i]/max*24))}px"></div>
+      </div></td></tr>`;
+  }
+  if(!rows)rows='<tr><td colspan="5" class="vazio">Sem lançamentos no ano.</td></tr>';
+  return `<table><thead><tr><th>Mês</th><th class="r">Receita</th><th class="r">Despesa</th><th class="r">Saldo</th><th>Evolução</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
 function tetoTable(){
   const list=state.cteto||[];
   if(!list.length)return '<div class="vazio">Nenhum contrato com teto definido.</div>';
@@ -224,6 +246,7 @@ function render(){
       <div class="card a"><div class="lbl">Em aberto (ano)</div><div class="val">${money(emAberto)}</div></div>
       <div class="card d"><div class="lbl">DEA (exerc. anteriores)</div><div class="val">${money(state.deaTotal||0)}</div></div>
     </div>
+    <h2>Evolução mês a mês — ano ${anoLbl}</h2>${mesAMes()}
     <h2>Entradas</h2>${tbl(ents,'Sem entradas neste mês.')}
     <h2>Despesas</h2>${tbl(desps,'Sem despesas neste mês.')}
     <h2>Por contrato — teto &amp; resultado <small style="color:var(--cinza);font-weight:400">(acumulado, não só o mês)</small></h2>${tetoTable()}
