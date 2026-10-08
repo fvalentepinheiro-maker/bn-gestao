@@ -68,7 +68,7 @@ const cfg = globalThis.GSER_CONFIG||{};
 const URL = String(cfg.supabaseUrl||'').replace(/\/+$/,'');
 const KEY = String(cfg.supabasePublishableKey||'');
 const SK  = cfg.sessionKey||'gser.session.v1';
-const CATS = ['Médicos / Mão de obra','Impostos','Transporte','Alimentação','Marketing','Administrativo','Outros'];
+const CATS = ['Médicos / Mão de obra','Impostos','Jurídico','Transporte','Alimentação','Marketing','Administrativo','Outros'];
 const TIPOS_ENT = ['Recebimento de cliente','Aporte de capital','Outros'];
 const PGTO = ['Transferência','PIX','Dinheiro','Cheque','Boleto','Outro'];
 const app=document.getElementById('app'), ov=document.getElementById('ov'), modal=document.getElementById('modal');
@@ -129,6 +129,8 @@ async function loadYear(){
   const y=state.month.slice(0,4);
   try{state.year=await req('/rest/v1/cm_fin_entries?select=*&competence=gte.'+y+'-01-01&competence=lte.'+y+'-12-31');}
   catch{state.year=[];}
+  try{const d=await req('/rest/v1/cm_fin_entries?select=amount&kind=eq.despesa&status_fin=eq.dea');
+    state.deaTotal=d.reduce((s,e)=>s+Number(e.amount),0);}catch{state.deaTotal=0;}
 }
 function tetoTable(){
   const list=state.cteto||[];
@@ -187,7 +189,7 @@ function render(){
   const contrName=id=>{const c=state.contracts.find(c=>c.id===id);return c?`${c.contract_number} · ${c.supplier_name}`:'';};
   const rowHtml=e=>`<tr>
     <td>${esc((e.entry_date||'').slice(8,10))}/${esc((e.entry_date||'').slice(5,7))}</td>
-    <td>${esc(e.category)} ${e.is_aporte?'<span class="tag ap">aporte</span>':''}${(e.status_fin||'liquidado')==='aberto'?' <span class="tag" style="background:#fff4e5;color:#b26a00">em aberto</span>':''}</td>
+    <td>${esc(e.category)} ${e.is_aporte?'<span class="tag ap">aporte</span>':''}${(e.status_fin||'liquidado')==='aberto'?' <span class="tag" style="background:#fff4e5;color:#b26a00">em aberto</span>':''}${e.status_fin==='dea'?' <span class="tag" style="background:#ececfb;color:#4a3fb0">DEA</span>':''}</td>
     <td>${esc(e.description||'')}${e.source?' · '+esc(e.source):''}</td>
     <td>${esc(unitName(e.unit_id)||contrName(e.contract_id)||'—')}</td>
     <td>${e.has_nf?('NF'+(e.nf_number?' '+esc(e.nf_number):'')):'<span style="color:var(--cinza)">sem NF</span>'}${e.payment_method?'<br><small style="color:var(--cinza)">'+esc(e.payment_method)+'</small>':''}</td>
@@ -220,6 +222,7 @@ function render(){
       <div class="card d"><div class="lbl">Despesas do ano</div><div class="val">${money(despAno)}</div></div>
       <div class="card e"><div class="lbl">Liquidado (ano)</div><div class="val">${money(liquidado)}</div></div>
       <div class="card a"><div class="lbl">Em aberto (ano)</div><div class="val">${money(emAberto)}</div></div>
+      <div class="card d"><div class="lbl">DEA (exerc. anteriores)</div><div class="val">${money(state.deaTotal||0)}</div></div>
     </div>
     <h2>Entradas</h2>${tbl(ents,'Sem entradas neste mês.')}
     <h2>Despesas</h2>${tbl(desps,'Sem despesas neste mês.')}
@@ -247,8 +250,9 @@ function openForm(kind,e=null){
     <div class="row2">
       <div class="field"><label>${isE?'Tipo':'Categoria'}</label><select id="f_cat">${catOpts}</select></div>
       <div class="field"><label>Situação</label><select id="f_status">
-        <option value="liquidado" ${!e||e.status_fin!=='aberto'?'selected':''}>Liquidado</option>
-        <option value="aberto" ${e&&e.status_fin==='aberto'?'selected':''}>Em aberto</option></select></div>
+        <option value="liquidado" ${!e||(e.status_fin||'liquidado')==='liquidado'?'selected':''}>Liquidado</option>
+        <option value="aberto" ${e&&e.status_fin==='aberto'?'selected':''}>Em aberto</option>
+        <option value="dea" ${e&&e.status_fin==='dea'?'selected':''}>DEA (exerc. anterior)</option></select></div>
     </div>
     ${isE?`<div class="field chk"><input type="checkbox" id="f_aporte" ${e&&e.is_aporte?'checked':''}><label>É aporte de capital externo</label></div>
     <div class="field"><label>Origem do aporte / cliente</label><input id="f_source" value="${e?esc(e.source||''):''}"></div>`:''}
