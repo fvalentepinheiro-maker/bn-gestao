@@ -114,12 +114,20 @@ async function loadAll(){
 }
 async function loadTetos(){
   state.cteto=await req('/rest/v1/cm_contracts?select=id,contract_number,supplier_name,teto_qtd,valor_norte&teto_qtd=not.is.null&order=contract_number.asc');
-  const slots=await req('/rest/v1/cm_schedule_slots?select=contract_id,patients,status&contract_id=not.is.null');
-  state.consumo={};
-  for(const s of slots){if(['preenchido','confirmado'].includes(s.status))state.consumo[s.contract_id]=(state.consumo[s.contract_id]||0)+Number(s.patients||0);}
-  const fins=await req('/rest/v1/cm_fin_entries?select=kind,amount,contract_id&contract_id=not.is.null');
+  const slots=await req('/rest/v1/cm_schedule_slots?select=contract_id,unit_id,physician_id,patients,status&contract_id=not.is.null');
+  state.consumo={}; const map={};
+  for(const s of slots){
+    if(['preenchido','confirmado'].includes(s.status))state.consumo[s.contract_id]=(state.consumo[s.contract_id]||0)+Number(s.patients||0);
+    if(s.physician_id)map[s.unit_id+'|'+s.physician_id]=s.contract_id;  // produção ligada a contrato
+  }
   state.finAgg={};
-  for(const f of fins){const a=state.finAgg[f.contract_id]||{rec:0,desp:0};if(f.kind==='entrada')a.rec+=Number(f.amount);else a.desp+=Number(f.amount);state.finAgg[f.contract_id]=a;}
+  const add=(cid,k,v)=>{const a=state.finAgg[cid]||{rec:0,desp:0};a[k]+=Number(v||0);state.finAgg[cid]=a;};
+  // Recebido do cliente e pago ao médico registrados na ESCALA (cm_physician_payments)
+  const pays=await req('/rest/v1/cm_physician_payments?select=unit_id,physician_id,received_value,paid_value');
+  for(const p of pays){const cid=map[p.unit_id+'|'+p.physician_id];if(cid){add(cid,'rec',p.received_value);add(cid,'desp',p.paid_value);}}
+  // Entradas/despesas lançadas no FINANCEIRO vinculadas a contrato
+  const fins=await req('/rest/v1/cm_fin_entries?select=kind,amount,contract_id&contract_id=not.is.null');
+  for(const f of fins){add(f.contract_id, f.kind==='entrada'?'rec':'desp', f.amount);}
 }
 function tetoTable(){
   const list=state.cteto||[];
@@ -137,7 +145,7 @@ function tetoTable(){
       <td class="r" style="color:${liq<0?'var(--vermelho)':'var(--verde)'}">${money(liq)}</td>
       <td class="acts r">${canEdit()?`<button data-teto="${c.id}">✏️</button>`:''}</td></tr>`;
   };
-  return `<table><thead><tr><th>Contrato</th><th class="r">Teto</th><th class="r">Consumido</th><th class="r">Saldo</th><th class="r">Norte</th><th class="r">Recebido</th><th class="r">Despesas</th><th class="r">Líquido</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
+  return `<table><thead><tr><th>Contrato</th><th class="r">Teto</th><th class="r">Executado</th><th class="r">Saldo</th><th class="r">Norte</th><th class="r">Recebido</th><th class="r">Despesas</th><th class="r">Líquido</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
 }
 function openTeto(id){
   const c=state.cteto.find(x=>x.id===id);
