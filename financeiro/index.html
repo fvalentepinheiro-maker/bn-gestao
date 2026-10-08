@@ -70,6 +70,7 @@ const KEY = String(cfg.supabasePublishableKey||'');
 const SK  = cfg.sessionKey||'gser.session.v1';
 const CATS = ['Médicos / Mão de obra','Impostos','Transporte','Alimentação','Marketing','Administrativo','Outros'];
 const TIPOS_ENT = ['Recebimento de cliente','Aporte de capital','Outros'];
+const PGTO = ['Transferência','PIX','Dinheiro','Cheque','Boleto','Outro'];
 const app=document.getElementById('app'), ov=document.getElementById('ov'), modal=document.getElementById('modal');
 let sess=null; try{sess=JSON.parse(localStorage.getItem(SK))}catch{}
 const state={sess, profile:null, units:[], contracts:[], entries:[], month:new Date().toISOString().slice(0,7), err:''};
@@ -128,10 +129,11 @@ function render(){
     <td>${esc(e.category)} ${e.is_aporte?'<span class="tag ap">aporte</span>':''}</td>
     <td>${esc(e.description||'')}${e.source?' · '+esc(e.source):''}</td>
     <td>${esc(unitName(e.unit_id)||contrName(e.contract_id)||'—')}</td>
+    <td>${e.has_nf?('NF'+(e.nf_number?' '+esc(e.nf_number):'')):'<span style="color:var(--cinza)">sem NF</span>'}${e.payment_method?'<br><small style="color:var(--cinza)">'+esc(e.payment_method)+'</small>':''}</td>
     <td class="r">${money(e.amount)}</td>
     <td class="acts r">${canEdit()?`<button data-ed="${e.id}">✏️</button><button data-del="${e.id}">🗑️</button>`:''}</td>
   </tr>`;
-  const tbl=(list,vazio)=>list.length?`<table><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Vínculo</th><th class="r">Valor</th><th></th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table>`:`<div class="vazio">${vazio}</div>`;
+  const tbl=(list,vazio)=>list.length?`<table><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Vínculo</th><th>NF / Pgto</th><th class="r">Valor</th><th></th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table>`:`<div class="vazio">${vazio}</div>`;
   app.innerHTML=`
   <div class="top">
     <div class="brand">Gerencial BN<small>Financeiro</small></div>
@@ -179,6 +181,11 @@ function openForm(kind,e=null){
       <div class="field"><label>Unidade (opcional)</label><select id="f_unit">${unitOpts}</select></div>
       <div class="field"><label>Contrato (opcional)</label><select id="f_contr">${contrOpts}</select></div>
     </div>
+    <div class="row2">
+      <div class="field"><label>Forma de pagamento</label><select id="f_pgto"><option value="">—</option>${PGTO.map(x=>`<option ${e&&e.payment_method===x?'selected':''}>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>Nº / série da NF</label><input id="f_nf_num" value="${e?esc(e.nf_number||''):''}"></div>
+    </div>
+    <div class="field chk"><input type="checkbox" id="f_has_nf" ${e&&e.has_nf?'checked':''}><label>Teve nota fiscal (NF)</label></div>
     <div class="err" id="f_err"></div>
     <div class="acts2"><button class="btn" id="f_cancel">Cancelar</button><button class="btn prim" id="f_save">Salvar</button></div>`;
   ov.classList.add('on');
@@ -195,7 +202,10 @@ async function saveEntry(kind,e){
     category:g('f_cat').value,description:g('f_desc').value||null,amount,
     unit_id:g('f_unit').value||null,contract_id:g('f_contr').value||null,
     is_aporte:isE?(g('f_aporte').checked || g('f_cat').value==='Aporte de capital'):false,
-    source:isE?(g('f_source').value||null):null};
+    source:isE?(g('f_source').value||null):null,
+    payment_method:g('f_pgto').value||null,
+    nf_number:g('f_nf_num').value||null,
+    has_nf:g('f_has_nf').checked || !!g('f_nf_num').value};
   try{
     if(e){await req('/rest/v1/cm_fin_entries?id=eq.'+e.id,{method:'PATCH',headers:{Prefer:'return=minimal'},body});}
     else{await req('/rest/v1/cm_fin_entries',{method:'POST',headers:{Prefer:'return=minimal'},body});}
