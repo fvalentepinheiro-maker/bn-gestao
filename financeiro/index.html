@@ -178,6 +178,7 @@ function render(){
   const saldo=totE-totD;
   const yEnt=state.year||[], stOf=e=>(e.status_fin||'liquidado');
   const sumK=(kind,st)=>yEnt.filter(e=>e.kind===kind&&stOf(e)===st).reduce((s,e)=>s+Number(e.amount),0);
+  const recAno=yEnt.filter(e=>e.kind==='entrada').reduce((s,e)=>s+Number(e.amount),0);
   const despAno=yEnt.filter(e=>e.kind==='despesa').reduce((s,e)=>s+Number(e.amount),0);
   const liquidado=sumK('entrada','liquidado')-sumK('despesa','liquidado');
   const emAberto=sumK('entrada','aberto')-sumK('despesa','aberto');
@@ -214,6 +215,7 @@ function render(){
     </div>
     <h2>Visão gerencial — ano ${anoLbl}</h2>
     <div class="cards">
+      <div class="card e"><div class="lbl">Receita do ano</div><div class="val">${money(recAno)}</div></div>
       <div class="card d"><div class="lbl">Despesas do mês</div><div class="val">${money(totD)}</div></div>
       <div class="card d"><div class="lbl">Despesas do ano</div><div class="val">${money(despAno)}</div></div>
       <div class="card e"><div class="lbl">Liquidado (ano)</div><div class="val">${money(liquidado)}</div></div>
