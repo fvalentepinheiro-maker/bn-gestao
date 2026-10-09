@@ -85,12 +85,13 @@ async function loadData() {
     rows('cm_physicians', '&order=full_name'),
     rows('cm_physician_units'),
     rows('cm_contracts', '&select=id,contract_number,supplier_name,teto_qtd,valor_norte&order=supplier_name'),
-    rows('cm_schedule_slots', '&select=unit_id,patients,status'),
+    rows('cm_schedule_slots', '&select=unit_id,slot_date,period_key,physician_id,patients,status&order=slot_date'),
   ]);
   state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || []; state.contracts = contracts || [];
+  state.allSlots = consumo || [];
   // executado acumulado por SERVIÇO (todos os meses) — para bater com o teto do serviço
   state.consumoUnidade = {};
-  for (const s of (consumo || [])) {
+  for (const s of state.allSlots) {
     if (['preenchido', 'confirmado'].includes(s.status))
       state.consumoUnidade[s.unit_id] = (state.consumoUnidade[s.unit_id] || 0) + Number(s.patients || 0);
   }
@@ -288,8 +289,22 @@ function renderFinanceiro(el) {
            onchange="BN.pagar('${a.physician_id}','${a.unit_id}','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
       <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'}
            onchange="BN.pagar('${a.physician_id}','${a.unit_id}','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
+      <td><button class="btn" title="Demonstrativo do médico" onclick="BN.gerarPDFMedico('${a.physician_id}','${a.unit_id}')">📄</button></td>
     </tr>`;
   }).join('');
+
+  // ---- mês a mês da produção da escala (todos os meses) ----
+  const MES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+  const rateFor2 = (uid, pk) => state.rates.find(r => r.unit_id === uid && r.period_key === pk) || { billing_per_patient: 0, transfer_per_patient: 0 };
+  const mm = {};
+  for (const s of (state.allSlots || [])) {
+    if (!['preenchido', 'confirmado'].includes(s.status)) continue;
+    const c = (s.slot_date || '').slice(0, 7); if (!c) continue;
+    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
+    const o = mm[c] || { pac: 0, fat: 0, rep: 0 };
+    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0); mm[c] = o;
+  }
+  const mmRows = Object.keys(mm).sort().map(c => { const o = mm[c], p = c.split('-'); return `<tr><td>${MES[parseInt(p[1]) - 1]}/${p[0]}</td><td>${o.pac}</td><td>${money(o.fat)}</td><td style="color:var(--verde)">${money(o.rep)}</td><td style="color:var(--azul)">${money(o.fat - o.rep)}</td></tr>`; }).join('');
 
   el.innerHTML = `
     <div class="cards-kpi">
@@ -298,10 +313,16 @@ function renderFinanceiro(el) {
       <div class="kpi"><div class="rotulo">Imposto (${(taxa * 100).toFixed(0)}%)</div><div class="valor" style="color:var(--laranja)">${money(totImp)}</div></div>
       <div class="kpi"><div class="rotulo">Margem (fat − repasse − imposto)</div><div class="valor" style="color:var(--azul)">${money(totMar)}</div></div>
     </div>
+    <h3 style="margin:18px 0 8px">Repasse por médico · ${state.month}</h3>
     ${agg.length ? `<table>
-      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th></tr></thead>
+      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th><th></th></tr></thead>
       <tbody>${linhas}</tbody>
-    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada nesta competência.</div>'}`;
+    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada nesta competência.</div>'}
+    <h3 style="margin:22px 0 8px">Acompanhamento mês a mês · produção da escala</h3>
+    <table>
+      <thead><tr><th>Mês</th><th>Atendimentos</th><th>Faturamento</th><th>Repasse</th><th>Líquido (fat − rep)</th></tr></thead>
+      <tbody>${mmRows || '<tr><td colspan="5" class="vazio-aviso">Sem produção lançada.</td></tr>'}</tbody>
+    </table>`;
 }
 
 // ---- cadastro de médicos ----
@@ -744,6 +765,56 @@ button{background:#0e7c5a;color:#fff;border:0;border-radius:6px;padding:8px 14px
 <div class="assin">Atenciosamente,<br><br><b>Fernando S. V. Pinheiro Filho</b><span class="mut">Engenheiro de Produção · CREA/PA 1521414653</span><span class="mut">Diretor de Operações · BN Med Saúde</span></div>
 <div class="foot">BN Med Saúde Ltda · Belém/PA · Documento gerado em ${new Date().toLocaleDateString('pt-BR')}</div>
 </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { toast('Permita pop-ups para gerar o PDF.', true); return; }
+    w.document.write(html); w.document.close();
+  },
+  gerarPDFMedico(physId, unitId) {
+    const u = state.units.find(x => x.id === unitId); const med = physName(physId);
+    const rate = state.rates.filter(r => r.unit_id === unitId);
+    const repOf = pk => Number((rate.find(r => r.period_key === pk) || {}).transfer_per_patient || 0);
+    const labOf = pk => (rate.find(r => r.period_key === pk) || {}).period_label || pk;
+    const slots = (state.allSlots || []).filter(s => s.physician_id === physId && s.unit_id === unitId && ['preenchido', 'confirmado'].includes(s.status) && Number(s.patients || 0) > 0).sort((a, b) => (a.slot_date || '').localeCompare(b.slot_date || ''));
+    if (!slots.length) { toast('Sem produção deste médico nesta unidade.', true); return; }
+    const MES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const fmtD = iso => iso.slice(8, 10) + '/' + iso.slice(5, 7);
+    const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    let tp = 0, tr = 0;
+    const linhas = slots.map(s => { const q = Number(s.patients || 0), rep = q * repOf(s.period_key); tp += q; tr += rep; return `<tr><td>${fmtD(s.slot_date)}</td><td>${esc(labOf(s.period_key))}</td><td class="c">${q}</td><td class="r">${brl(rep)}</td></tr>`; }).join('');
+    const comp = [...new Set(slots.map(s => MES[parseInt(s.slot_date.slice(5, 7)) - 1]))].join(' · ');
+    const ano = slots[0].slot_date.slice(0, 4);
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Produção ${esc(med)}</title>
+<style>@page{margin:14mm}*{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;color:#1f2a24;margin:0;font-size:12px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0e7c5a;padding-bottom:10px}
+.logo{display:flex;align-items:center;gap:10px}.logo .mark{width:46px;height:46px;border-radius:10px;background:#0e7c5a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px}
+.logo .nome{font-weight:800;color:#0e7c5a;font-size:16px;line-height:1.1}.logo .slogan{color:#6b7a73;font-size:9px;letter-spacing:.5px;text-transform:uppercase}
+.contato{text-align:right;color:#4a5a52;font-size:10px;line-height:1.5}
+h1{font-size:15px;color:#0e7c5a;margin:16px 0 2px}.sub{color:#6b7a73;margin:0 0 12px;font-size:11px}
+.resumo{display:flex;gap:10px;margin:0 0 14px}.rc{flex:1;border:1px solid #d8e2dc;border-top:3px solid #0e7c5a;border-radius:8px;padding:8px 10px}
+.rc .k{font-size:9px;color:#6b7a73;text-transform:uppercase}.rc .v{font-size:14px;font-weight:700;margin-top:2px}
+table{width:100%;border-collapse:collapse;margin-bottom:12px}th{background:#0e7c5a;color:#fff;font-size:10px;text-transform:uppercase;padding:7px 8px;text-align:left}
+th.c,td.c{text-align:center}th.r,td.r{text-align:right}td{padding:6px 8px;border-bottom:1px solid #eef3f0}tr:nth-child(even) td{background:#f7faf9}
+tfoot td{border-top:2px solid #0e7c5a;font-weight:700;background:#eef7f3}
+.total{display:flex;justify-content:space-between;align-items:center;background:#0e7c5a;color:#fff;border-radius:8px;padding:12px 16px;margin:4px 0 18px}
+.total .lbl{font-size:11px;text-transform:uppercase}.total .big{font-size:22px;font-weight:800}
+.assin{margin-top:26px;font-size:11px}.assin b{display:block}.mut{color:#6b7a73;display:block}
+.foot{margin-top:24px;border-top:1px solid #d8e2dc;padding-top:6px;color:#8a9790;font-size:9px;text-align:center}
+.acts{position:fixed;top:8px;right:8px}@media print{.acts{display:none}}button{background:#0e7c5a;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer}</style></head><body>
+<div class="acts"><button onclick="window.print()">Salvar / Imprimir PDF</button></div>
+<div class="top"><div class="logo"><div class="mark">BN</div><div><div class="nome">BN Med Saúde</div><div class="slogan">Integramos Processos, Otimizamos Cuidado</div></div></div>
+<div class="contato"><b>BN Med Saúde Ltda</b><br>Belém/PA<br>(91) 99299-2424 · (91) 99248-3639<br>licitacaobnsaude@gmail.com</div></div>
+<h1>Demonstrativo de Produção Médica</h1>
+<p class="sub">${esc(med)} — ${esc(u ? u.name : '')}</p>
+<div class="resumo"><div class="rc"><div class="k">Competência</div><div class="v">${comp} / ${ano}</div></div>
+<div class="rc"><div class="k">Dias trabalhados</div><div class="v">${slots.length}</div></div>
+<div class="rc"><div class="k">Atendimentos</div><div class="v">${tp}</div></div></div>
+<table><thead><tr><th>Data</th><th>Turno</th><th class="c">Pacientes</th><th class="r">Repasse</th></tr></thead>
+<tbody>${linhas}</tbody>
+<tfoot><tr><td colspan="2">TOTAL</td><td class="c">${tp}</td><td class="r">${brl(tr)}</td></tr></tfoot></table>
+<div class="total"><div><div class="lbl">Total a repassar</div><div class="mut" style="font-size:10px;opacity:.85">${tp} pacientes em ${slots.length} dia(s)</div></div><div class="big">${brl(tr)}</div></div>
+<p class="mut">Documento de conferência de produção e repasse. Em caso de divergência, favor comunicar à gestão.</p>
+<div class="assin">Atenciosamente,<br><br><b>Fernando S. V. Pinheiro Filho</b><span class="mut">Diretor de Operações · BN Med Saúde</span></div>
+<div class="foot">BN Med Saúde Ltda · Belém/PA · Documento gerado em ${new Date().toLocaleDateString('pt-BR')}</div></body></html>`;
     const w = window.open('', '_blank');
     if (!w) { toast('Permita pop-ups para gerar o PDF.', true); return; }
     w.document.write(html); w.document.close();
