@@ -165,6 +165,7 @@ function render() {
       <span class="info">Competência</span>
       <input type="month" value="${state.month}" onchange="BN.mes(this.value)">
       ${canEdit() && !['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirMarcarPeriodo('${unitBySlug(state.tab)?.id}')">📅 Marcar período</button>` : ''}
+      ${!['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.gerarPDF('${unitBySlug(state.tab)?.id}')">📄 Gerar PDF faturamento</button>` : ''}
       ${!canEdit() ? '<span class="info" style="color:var(--laranja)">Seu perfil é somente consulta.</span>' : ''}
     </div>
     <div class="painel" id="painel"></div>`;
@@ -512,6 +513,86 @@ const BN = {
       ], 'unit_id,period_key');
       await loadData(); toast('Serviço cadastrado.'); render();
     } catch (e) { toast(e.message, true); }
+  },
+  async gerarPDF(unitId) {
+    const u = state.units.find(x => x.id === unitId);
+    if (!u) { toast('Abra uma unidade.', true); return; }
+    let slots;
+    try { slots = await rows('cm_schedule_slots', '&unit_id=eq.' + unitId + '&order=slot_date.asc'); }
+    catch (e) { toast(e.message, true); return; }
+    const rate = Number(ratesOf(unitId).find(r => r.period_key === 'manha')?.billing_per_patient) || 40;
+    const byd = {};
+    for (const s of slots) {
+      if (!['preenchido', 'confirmado'].includes(s.status)) continue;
+      const d = s.slot_date; byd[d] = byd[d] || { m: 0, t: 0 };
+      const q = Number(s.patients || 0);
+      if (s.period_key === 'manha') byd[d].m += q; else byd[d].t += q; // tarde + extra entram na tarde
+    }
+    const dias = Object.keys(byd).filter(d => byd[d].m + byd[d].t > 0).sort();
+    if (!dias.length) { toast('Nenhum atendimento lançado nesta unidade.', true); return; }
+    const MES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const fmtD = iso => iso.slice(8, 10) + '/' + iso.slice(5, 7);
+    const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    let tm = 0, tt = 0;
+    const linhas = dias.map(d => {
+      const r = byd[d], tot = r.m + r.t; tm += r.m; tt += r.t;
+      return `<tr><td>${fmtD(d)}</td><td class="c">${r.m}</td><td class="c">${r.t}</td><td class="c"><b>${tot}</b></td><td class="r">${brl(tot * rate)}</td></tr>`;
+    }).join('');
+    const totGeral = tm + tt;
+    const compMeses = [...new Set(dias.map(d => MES[parseInt(d.slice(5, 7)) - 1]))].join(' · ');
+    const ano = dias[0].slice(0, 4);
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Faturamento ${esc(u.name)}</title>
+<style>
+@page{margin:14mm}*{box-sizing:border-box}
+body{font-family:'Segoe UI',Arial,sans-serif;color:#1f2a24;margin:0;font-size:12px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0e7c5a;padding-bottom:10px}
+.logo{display:flex;align-items:center;gap:10px}
+.logo .mark{width:46px;height:46px;border-radius:10px;background:#0e7c5a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;letter-spacing:1px}
+.logo .nome{font-weight:800;color:#0e7c5a;font-size:16px;line-height:1.1}
+.logo .slogan{color:#6b7a73;font-size:9px;letter-spacing:.5px;text-transform:uppercase}
+.contato{text-align:right;color:#4a5a52;font-size:10px;line-height:1.5}
+h1{font-size:15px;color:#0e7c5a;margin:16px 0 2px}.sub{color:#6b7a73;margin:0 0 12px;font-size:11px}
+.resumo{display:flex;gap:10px;margin:0 0 14px}
+.rc{flex:1;border:1px solid #d8e2dc;border-top:3px solid #0e7c5a;border-radius:8px;padding:8px 10px}
+.rc .k{font-size:9px;color:#6b7a73;text-transform:uppercase;letter-spacing:.5px}.rc .v{font-size:14px;font-weight:700;margin-top:2px}
+table{width:100%;border-collapse:collapse;margin-bottom:12px}
+th{background:#0e7c5a;color:#fff;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:7px 8px;text-align:left}
+th.c,td.c{text-align:center}th.r,td.r{text-align:right}
+td{padding:6px 8px;border-bottom:1px solid #eef3f0}
+tr:nth-child(even) td{background:#f7faf9}
+tfoot td{border-top:2px solid #0e7c5a;font-weight:700;background:#eef7f3}
+.total{display:flex;justify-content:space-between;align-items:center;background:#0e7c5a;color:#fff;border-radius:8px;padding:12px 16px;margin:4px 0 18px}
+.total .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px}.total .big{font-size:22px;font-weight:800}
+.assin{margin-top:26px;font-size:11px}.assin b{display:block}.mut{color:#6b7a73;display:block}
+.foot{margin-top:24px;border-top:1px solid #d8e2dc;padding-top:6px;color:#8a9790;font-size:9px;text-align:center}
+.acts{position:fixed;top:8px;right:8px}@media print{.acts{display:none}}
+button{background:#0e7c5a;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer}
+</style></head><body>
+<div class="acts"><button onclick="window.print()">Salvar / Imprimir PDF</button></div>
+<div class="top">
+  <div class="logo"><div class="mark">BN</div><div><div class="nome">BN Med Saúde</div><div class="slogan">Integramos Processos, Otimizamos Cuidado</div></div></div>
+  <div class="contato"><b>BN Med Saúde Ltda</b><br>Belém/PA<br>(91) 99299-2424 · (91) 99248-3639<br>licitacaobnsaude@gmail.com</div>
+</div>
+<h1>Informativo de Faturamento — ${esc(u.name)}</h1>
+<p class="sub">Equipe de Oftalmologia BN Med</p>
+<div class="resumo">
+  <div class="rc"><div class="k">Competência</div><div class="v">${compMeses} / ${ano}</div></div>
+  <div class="rc"><div class="k">Valor por atendimento</div><div class="v">${brl(rate)}</div></div>
+  <div class="rc"><div class="k">Dias de atendimento</div><div class="v">${dias.length} dias</div></div>
+</div>
+<table>
+  <thead><tr><th>Data</th><th class="c">Manhã</th><th class="c">Tarde</th><th class="c">Total</th><th class="r">Valor</th></tr></thead>
+  <tbody>${linhas}</tbody>
+  <tfoot><tr><td>TOTAL DO PERÍODO</td><td class="c">${tm}</td><td class="c">${tt}</td><td class="c">${totGeral}</td><td class="r">${brl(totGeral * rate)}</td></tr></tfoot>
+</table>
+<div class="total"><div><div class="lbl">Valor total a faturar</div><div class="mut" style="font-size:10px;opacity:.85">${totGeral} pacientes (${tm} manhã · ${tt} tarde)</div></div><div class="big">${brl(totGeral * rate)}</div></div>
+<p class="mut">Solicitamos a gentileza de confirmação do recebimento deste informativo, bem como a indicação do prazo de pagamento. Permanecemos à disposição para qualquer esclarecimento.</p>
+<div class="assin">Atenciosamente,<br><br><b>Fernando S. V. Pinheiro Filho</b><span class="mut">Engenheiro de Produção · CREA/PA 1521414653</span><span class="mut">Diretor de Operações · BN Med Saúde</span></div>
+<div class="foot">BN Med Saúde Ltda · Belém/PA · Documento gerado em ${new Date().toLocaleDateString('pt-BR')}</div>
+</body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { toast('Permita pop-ups para gerar o PDF.', true); return; }
+    w.document.write(html); w.document.close();
   },
 };
 window.BN = BN;
