@@ -64,7 +64,7 @@ const MES=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','De
 const app=document.getElementById('app'), ov=document.getElementById('ov'), modal=document.getElementById('modal');
 let sess=null; try{sess=JSON.parse(localStorage.getItem(SK))}catch{}
 const state={sess,profile:null,units:[],physicians:[],rates:[],slots:[],payments:[],
-  mode:'mensal',month:new Date().toISOString().slice(0,7),ini:'',fim:'',err:''};
+  mode:'mensal',month:new Date().toISOString().slice(0,7),ini:'',fim:'',unit:'',err:''};
 const money=x=>Number(x||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function setSess(s){state.sess=s; s?localStorage.setItem(SK,JSON.stringify(s)):localStorage.removeItem(SK);}
@@ -81,7 +81,7 @@ async function req(path,{method='GET',body,auth=true,headers={}}={}){
   const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
 const rows=(t,q='')=>req('/rest/v1/'+t+'?select=*'+q+'&limit=5000');
-const canEdit=()=>state.profile?.is_active&&['manager','operator'].includes(state.profile.role);
+const canEdit=()=>state.profile?(state.profile.is_active&&['manager','operator'].includes(state.profile.role)):!!state.sess;
 const physName=id=>state.physicians.find(p=>p.id===id)?.full_name||'—';
 const unitName=id=>state.units.find(u=>u.id===id)?.name||'';
 const rfor=(uid,pk)=>state.rates.find(r=>r.unit_id===uid&&r.period_key===pk)||{billing_per_patient:0,transfer_per_patient:0};
@@ -125,6 +125,7 @@ function agg(){
   const g={};
   for(const s of state.slots){
     if(!okSlot(s)||!s.physician_id||!inRange(s.slot_date))continue;
+    if(state.unit&&s.unit_id!==state.unit)continue;
     const r=rfor(s.unit_id,s.period_key),q=Number(s.patients||0);
     const k=s.physician_id+'|'+s.unit_id;
     const o=g[k]||{phys:s.physician_id,unit:s.unit_id,pac:0,rep:0};
@@ -150,6 +151,7 @@ async function savePay(phys,unit,comp,field,val){
 window.RP={
   async pay(phys,unit,field,val){await savePay(phys,unit,state.month+'-01',field,val);render();},
   mode(m){state.mode=m;render();},
+  unit(v){state.unit=v;render();},
   mes(v){state.month=v;render();},
   ini(v){state.ini=v;render();},
   fim(v){state.fim=v;render();},
@@ -228,6 +230,7 @@ function render(){
       <button class="${state.mode==='custom'?'on':''}" onclick="RP.mode('custom')">Personalizado</button>
     </div>
     ${seletor}
+    <label>Unidade de negócio<select onchange="RP.unit(this.value)"><option value="">Todas as unidades</option>${state.units.map(u=>`<option value="${u.id}" ${state.unit===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select></label>
   </div>
   <div class="cards">
     <div class="kpi"><div class="k">Repasse devido no período</div><div class="v" style="color:var(--vermelho)">${money(totRep)}</div></div>
