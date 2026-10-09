@@ -19,6 +19,48 @@
     } catch (e) { return []; }
   }
 
+  // Produção (executado) × teto por contrato — vem da Escala (serviços + slots)
+  var prodCache = null, prodAt = 0;
+  async function getProd() {
+    if (prodCache && Date.now() - prodAt < 20000) return prodCache;
+    var s = sess(); if (!s) return {};
+    var h = { apikey: KEY, Authorization: 'Bearer ' + s.access_token };
+    try {
+      var res = await Promise.all([
+        fetch(API + '/rest/v1/cm_contracts?select=id,contract_number', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_units?select=contract_id,teto_qtd', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_slots?select=contract_id,patients,status&contract_id=not.is.null', { headers: h }).then(function (r) { return r.json(); }),
+      ]);
+      var cs = res[0] || [], us = res[1] || [], sl = res[2] || [];
+      var num = {}; cs.forEach(function (c) { num[c.id] = c.contract_number; });
+      var teto = {}, exec = {};
+      us.forEach(function (u) { if (u.contract_id && u.teto_qtd) teto[u.contract_id] = (teto[u.contract_id] || 0) + Number(u.teto_qtd); });
+      sl.forEach(function (x) { if (x.status === 'preenchido' || x.status === 'confirmado') exec[x.contract_id] = (exec[x.contract_id] || 0) + Number(x.patients || 0); });
+      var out = {};
+      Object.keys(num).forEach(function (id) { if (teto[id]) out[num[id]] = { teto: teto[id], exec: exec[id] || 0 }; });
+      prodCache = out; prodAt = Date.now(); return out;
+    } catch (e) { return {}; }
+  }
+
+  function augmentUsage(prod) {
+    document.querySelectorAll('#view table').forEach(function (tbl) {
+      var ths = tbl.querySelectorAll('thead th');
+      var heads = [].map.call(ths, function (th) { return th.textContent.trim(); });
+      var ui = heads.indexOf('Uso do contrato');
+      if (ui < 0) return;
+      if (ths[ui] && !ths[ui].dataset.bnprod) { ths[ui].dataset.bnprod = '1'; ths[ui].textContent = 'Produção × teto'; }
+      tbl.querySelectorAll('tbody tr').forEach(function (tr) {
+        var cell = tr.children[ui]; if (!cell || cell.dataset.bnprod) return;
+        var strong = tr.querySelector('td strong'); var n = strong && strong.textContent.trim();
+        var p = n && prod[n]; if (!p || !p.teto) return;
+        var pct = Math.min(100, Math.round(p.exec / p.teto * 100));
+        var col = pct >= 100 ? '#0e7c5a' : pct >= 90 ? '#ea580c' : '#14688b';
+        cell.dataset.bnprod = '1';
+        cell.innerHTML = '<div style="font-weight:700;color:' + col + '">' + pct + '% <small style="color:#6b7280;font-weight:400">(' + p.exec + '/' + p.teto + ')</small></div><div style="height:6px;background:#eef2f7;border-radius:4px;margin-top:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:' + col + '"></div></div>';
+      });
+    });
+  }
+
   function panelHTML(data) {
     var y = new Date().toISOString().slice(0, 4);
     var fat = 0, desp = 0, liqE = 0, liqD = 0, abE = 0, abD = 0;
@@ -71,6 +113,7 @@
           }
         } finally { busy = false; }
       }
+      try { getProd().then(augmentUsage); } catch (e) { }
     } else { var ex = document.getElementById('bnfin'); if (ex) ex.remove(); }
   }
 
