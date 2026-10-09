@@ -89,6 +89,7 @@ async function loadData() {
   ]);
   state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || []; state.contracts = contracts || [];
   state.allSlots = consumo || [];
+  try { state.allPayments = await rows('cm_physician_payments'); } catch (e) { state.allPayments = []; }
   // executado acumulado por SERVIÇO (todos os meses) — para bater com o teto do serviço
   state.consumoUnidade = {};
   for (const s of state.allSlots) {
@@ -144,6 +145,62 @@ async function salvarPagamento(physId, unitId, campo, valor) {
     const i = state.payments.findIndex(p => p.physician_id === physId && p.unit_id === unitId && p.competence === comp);
     if (i >= 0) state.payments[i] = saved; else state.payments.push(saved);
   } catch (e) { toast(e.message, true); }
+}
+
+async function salvarPagamentoComp(physId, unitId, comp, campo, valor) {
+  const ex = (state.allPayments || []).find(p => p.physician_id === physId && p.unit_id === unitId && p.competence === comp) || {};
+  const body = {
+    physician_id: physId, unit_id: unitId, competence: comp,
+    paid_value: ex.paid_value ?? 0, paid_patients: ex.paid_patients ?? 0, paid_at: ex.paid_at ?? null,
+    received_value: ex.received_value ?? 0, received_patients: ex.received_patients ?? 0, received_at: ex.received_at ?? null,
+    [campo]: valor,
+  };
+  try {
+    const [saved] = await upsert('cm_physician_payments', body, 'physician_id,unit_id,competence');
+    state.allPayments = state.allPayments || [];
+    const i = state.allPayments.findIndex(p => p.physician_id === physId && p.unit_id === unitId && p.competence === comp);
+    if (i >= 0) state.allPayments[i] = saved; else state.allPayments.push(saved);
+  } catch (e) { toast(e.message, true); }
+}
+
+// mensagem de produção do médico (para copiar e enviar)
+function bnProdMsg(physId, comps) {
+  const nome = physName(physId);
+  const slots = (state.allSlots || []).filter(s => s.physician_id === physId && ['preenchido', 'confirmado'].includes(s.status) && Number(s.patients || 0) > 0 && comps.includes((s.slot_date || '').slice(0, 7))).sort((a, b) => (a.slot_date || '').localeCompare(b.slot_date || ''));
+  const labels = comps.slice().sort().map(c => { const p = c.split('-'); return MESNOME[parseInt(p[1]) - 1] + '/' + p[0]; });
+  let msg = '📊 PRODUÇÃO — ' + nome + '\nCompetência: ' + labels.join(', ') + '\n\n';
+  let tp = 0, tr = 0;
+  for (const s of slots) {
+    const u = unitBySlug_byId(s.unit_id), r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0), rep = q * Number(r.transfer_per_patient || 0);
+    tp += q; tr += rep;
+    const wd = new Date(s.slot_date + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long' });
+    const dd = s.slot_date.slice(8, 10) + '/' + s.slot_date.slice(5, 7);
+    msg += '• ' + dd + ' (' + wd.charAt(0).toUpperCase() + wd.slice(1) + ') — ' + (u ? u.name : '') + ' — ' + (r.period_label || s.period_key) + ' — ' + q + ' pac. — ' + money(rep) + '\n';
+  }
+  msg += '\nTOTAL: ' + tp + ' pacientes — ' + money(tr);
+  return msg;
+}
+
+function abrirProducaoMedico(physId) {
+  const comps = [...new Set((state.allSlots || []).filter(s => s.physician_id === physId && ['preenchido', 'confirmado'].includes(s.status) && Number(s.patients || 0) > 0).map(s => (s.slot_date || '').slice(0, 7)).filter(Boolean))].sort();
+  const medOpts = state.physicians.map(p => `<option value="${p.id}" ${p.id === physId ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('');
+  const anyChecked = comps.includes(state.month);
+  const chks = comps.length ? comps.map(c => { const p = c.split('-'); return `<label style="display:inline-flex;align-items:center;gap:4px;margin:0 12px 8px 0;font-size:.85rem"><input type="checkbox" class="pmComp" value="${c}" ${c === state.month || (!anyChecked && c === comps[comps.length - 1]) ? 'checked' : ''} onchange="BN.refreshProd()"> ${MESNOME[parseInt(p[1]) - 1]}/${p[0]}</label>`; }).join('') : '<span style="color:#667">Sem produção lançada para este médico.</span>';
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal" style="max-width:620px">
+    <h3>📊 Produção do médico</h3>
+    <p style="color:#667;font-size:.85rem">Monta uma mensagem com a produção por dia e o total do período, pronta pra copiar e enviar ao médico.</p>
+    <label>Médico<br><select id="pmMed" onchange="BN.abrirProducaoMedico(this.value)">${medOpts}</select></label>
+    <div style="margin:12px 0 4px;font-size:.76rem;color:#667;text-transform:uppercase;letter-spacing:.5px">Competência (pode marcar mais de um mês)</div>
+    <div>${chks}</div>
+    <pre id="pmPreview" style="white-space:pre-wrap;background:#f3f6f9;border-radius:8px;padding:12px;font-size:.82rem;max-height:240px;overflow:auto;margin:10px 0"></pre>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.copiarProducao()">📋 Copiar mensagem</button>
+      <button class="btn" onclick="BN.fecharModal()">Fechar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+  if (window.BN) BN.refreshProd();
 }
 
 // =====================================================================
@@ -264,65 +321,65 @@ function turnoCell(unit, iso, pr) {
 }
 
 // ---- financeiro / repasse ----
+const MESNOME = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+const rateFor2 = (uid, pk) => state.rates.find(r => r.unit_id === uid && r.period_key === pk) || { billing_per_patient: 0, transfer_per_patient: 0 };
 function renderFinanceiro(el) {
-  const agg = aggregatePhysicianMonth(state.slots, state.rates);
-  const comp = state.month + '-01';
-  const taxa = state.units[0]?.tax_rate ?? 0.17;
+  const slotsOk = (state.allSlots || []).filter(s => ['preenchido', 'confirmado'].includes(s.status));
 
-  const totFat = round2(agg.reduce((n, a) => n + a.faturamento_devido, 0));
-  const totRep = round2(agg.reduce((n, a) => n + a.repasse_devido, 0));
-  const totImp = imposto(totFat, taxa);
-  const totMar = margem(totFat, totRep, taxa);
+  // --- Resultado por unidade de negócio (acumulado) ---
+  const porUni = {};
+  for (const s of slotsOk) {
+    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
+    const o = porUni[s.unit_id] || { pac: 0, fat: 0, rep: 0 };
+    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0);
+    porUni[s.unit_id] = o;
+  }
+  const cores = ['#1a4fa0', '#0e7c5a', '#14688b', '#6b46c1', '#b45309', '#be185d'];
+  const cards = state.units.filter(u => porUni[u.id]).map((u, i) => {
+    const o = porUni[u.id], tax = Number(u.tax_rate || 0), imp = o.fat * tax, res = o.fat - o.rep - imp, cor = cores[i % cores.length];
+    const lin = (k, v, c) => `<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#667">${k}</span><b${c ? ' style="color:' + c + '"' : ''}>${v}</b></div>`;
+    return `<div style="flex:1;min-width:220px;background:#fff;border:1px solid #dde1e8;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.05)">
+      <div style="background:${cor};color:#fff;padding:10px 14px;font-weight:700">${esc(u.name)}</div>
+      <div style="padding:12px 14px;font-size:.86rem">
+        ${lin('Pacientes', o.pac)}${lin('Faturamento', money(o.fat), '#1a4fa0')}${lin('Repasse', money(o.rep), 'var(--vermelho,#c62828)')}${lin('Imposto (' + (tax * 100).toFixed(0) + '%)', money(imp), 'var(--laranja,#ea580c)')}
+        <div style="border-top:1px solid #eef2f7;margin-top:5px;padding-top:5px">${lin('Resultado', money(res), 'var(--verde,#0e7c5a)')}</div>
+      </div></div>`;
+  }).join('');
 
-  const linhas = agg.sort((a, b) => physName(a.physician_id).localeCompare(physName(b.physician_id))).map(a => {
-    const pay = state.payments.find(p => p.physician_id === a.physician_id && p.unit_id === a.unit_id && p.competence === comp) || {};
-    const u = unitBySlug_byId(a.unit_id);
-    const sp = statusValor(pay.paid_value, a.repasse_devido);
-    const sr = statusValor(pay.received_value, a.faturamento_devido);
+  // --- Repasse por profissional, unidade e mês (todos os meses) ---
+  const grp = {};
+  for (const s of slotsOk) {
+    const comp = (s.slot_date || '').slice(0, 7); if (!comp || !s.physician_id) continue;
+    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
+    const k = s.physician_id + '|' + s.unit_id + '|' + comp;
+    const o = grp[k] || { phys: s.physician_id, unit: s.unit_id, comp: comp, pac: 0, fat: 0, rep: 0 };
+    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0);
+    grp[k] = o;
+  }
+  const payOf = (phys, unit, comp) => (state.allPayments || []).find(p => p.physician_id === phys && p.unit_id === unit && (p.competence || '').slice(0, 7) === comp) || {};
+  const linhas = Object.values(grp).sort((a, b) => physName(a.phys).localeCompare(physName(b.phys)) || (a.comp < b.comp ? -1 : 1)).map(g => {
+    const u = unitBySlug_byId(g.unit), pay = payOf(g.phys, g.unit, g.comp), p = g.comp.split('-');
+    const sp = statusValor(pay.paid_value, g.rep), sr = statusValor(pay.received_value, g.fat);
     return `<tr>
-      <td>${esc(physName(a.physician_id))}</td>
+      <td><b>${esc(physName(g.phys))}</b></td>
       <td>${esc(u?.name || '')}</td>
-      <td>${a.pacientes}</td>
-      <td>${money(a.faturamento_devido)}</td>
-      <td>${money(a.repasse_devido)}</td>
-      <td><input type="number" step="0.01" value="${pay.paid_value ?? 0}" ${canEdit() ? '' : 'disabled'}
-           onchange="BN.pagar('${a.physician_id}','${a.unit_id}','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
-      <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'}
-           onchange="BN.pagar('${a.physician_id}','${a.unit_id}','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
-      <td><button class="btn" title="Demonstrativo do médico" onclick="BN.gerarPDFMedico('${a.physician_id}','${a.unit_id}')">📄</button></td>
+      <td>${MESNOME[parseInt(p[1]) - 1]}/${p[0]}</td>
+      <td>${g.pac}</td>
+      <td style="color:var(--vermelho,#c62828)">${money(g.rep)}</td>
+      <td><input type="number" step="0.01" value="${pay.paid_value ?? 0}" ${canEdit() ? '' : 'disabled'} onchange="BN.pagarComp('${g.phys}','${g.unit}','${g.comp}-01','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
+      <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'} onchange="BN.pagarComp('${g.phys}','${g.unit}','${g.comp}-01','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
+      <td><button class="btn" title="Enviar produção ao médico" onclick="BN.abrirProducaoMedico('${g.phys}')">📨</button></td>
     </tr>`;
   }).join('');
 
-  // ---- mês a mês da produção da escala (todos os meses) ----
-  const MES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-  const rateFor2 = (uid, pk) => state.rates.find(r => r.unit_id === uid && r.period_key === pk) || { billing_per_patient: 0, transfer_per_patient: 0 };
-  const mm = {};
-  for (const s of (state.allSlots || [])) {
-    if (!['preenchido', 'confirmado'].includes(s.status)) continue;
-    const c = (s.slot_date || '').slice(0, 7); if (!c) continue;
-    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
-    const o = mm[c] || { pac: 0, fat: 0, rep: 0 };
-    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0); mm[c] = o;
-  }
-  const mmRows = Object.keys(mm).sort().map(c => { const o = mm[c], p = c.split('-'); return `<tr><td>${MES[parseInt(p[1]) - 1]}/${p[0]}</td><td>${o.pac}</td><td>${money(o.fat)}</td><td style="color:var(--verde)">${money(o.rep)}</td><td style="color:var(--azul)">${money(o.fat - o.rep)}</td></tr>`; }).join('');
-
   el.innerHTML = `
-    <div class="cards-kpi">
-      <div class="kpi"><div class="rotulo">Faturamento previsto</div><div class="valor">${money(totFat)}</div></div>
-      <div class="kpi"><div class="rotulo">Repasse aos médicos</div><div class="valor" style="color:var(--verde)">${money(totRep)}</div></div>
-      <div class="kpi"><div class="rotulo">Imposto (${(taxa * 100).toFixed(0)}%)</div><div class="valor" style="color:var(--laranja)">${money(totImp)}</div></div>
-      <div class="kpi"><div class="rotulo">Margem (fat − repasse − imposto)</div><div class="valor" style="color:var(--azul)">${money(totMar)}</div></div>
-    </div>
-    <h3 style="margin:18px 0 8px">Repasse por médico · ${state.month}</h3>
-    ${agg.length ? `<table>
-      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th><th></th></tr></thead>
+    <h3 style="margin:0 0 10px">Resultado por unidade de negócio <small style="color:#667;font-weight:400">(acumulado)</small></h3>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:22px">${cards || '<div class="vazio-aviso">Sem produção lançada.</div>'}</div>
+    <h3 style="margin:0 0 10px">Repasse por profissional, unidade e mês</h3>
+    ${Object.keys(grp).length ? `<table>
+      <thead><tr><th>Médico</th><th>Unidade</th><th>Mês</th><th>Pac.</th><th>Repasse</th><th>Pago ao médico</th><th>Recebido por nós</th><th></th></tr></thead>
       <tbody>${linhas}</tbody>
-    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada nesta competência.</div>'}
-    <h3 style="margin:22px 0 8px">Acompanhamento mês a mês · produção da escala</h3>
-    <table>
-      <thead><tr><th>Mês</th><th>Atendimentos</th><th>Faturamento</th><th>Repasse</th><th>Líquido (fat − rep)</th></tr></thead>
-      <tbody>${mmRows || '<tr><td colspan="5" class="vazio-aviso">Sem produção lançada.</td></tr>'}</tbody>
-    </table>`;
+    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada.</div>'}`;
 }
 
 // ---- cadastro de médicos ----
@@ -637,6 +694,27 @@ const BN = {
   async pagar(physId, unitId, campo, val) {
     await salvarPagamento(physId, unitId, campo, Math.max(0, Number(String(val).replace(',', '.')) || 0));
     render();
+  },
+  async pagarComp(physId, unitId, comp, campo, val) {
+    await salvarPagamentoComp(physId, unitId, comp, campo, Math.max(0, Number(String(val).replace(',', '.')) || 0));
+    render();
+  },
+  abrirProducaoMedico,
+  refreshProd() {
+    const med = document.getElementById('pmMed') && document.getElementById('pmMed').value;
+    const comps = [].map.call(document.querySelectorAll('.pmComp:checked'), c => c.value);
+    const pre = document.getElementById('pmPreview');
+    if (pre) pre.textContent = comps.length ? bnProdMsg(med, comps) : 'Marque ao menos uma competência.';
+  },
+  async copiarProducao() {
+    const t = (document.getElementById('pmPreview') || {}).textContent || '';
+    if (!t) { toast('Nada para copiar.', true); return; }
+    try { await navigator.clipboard.writeText(t); toast('Mensagem copiada!'); }
+    catch (e) {
+      const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('Mensagem copiada!'); } catch (_) { toast('Selecione e copie manualmente.', true); }
+      ta.remove();
+    }
   },
   async addMedico() {
     const nome = document.getElementById('novoMedNome').value.trim();
