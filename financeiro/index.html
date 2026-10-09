@@ -162,15 +162,16 @@ function tetoTable(){
     const ag=state.finAgg[c.id]||{rec:0,desp:0};
     const norte=(c.teto_qtd||0)*Number(c.valor_norte||0), liq=ag.rec-ag.desp;
     const pct=c.teto_qtd?Math.min(100,Math.round(cons/c.teto_qtd*100)):0;
+    const pctRec=norte>0?Math.round(ag.rec/norte*100):0;
     return `<tr>
       <td>${esc(c.contract_number)}<br><small style="color:var(--cinza)">${esc(c.supplier_name)}</small></td>
       <td class="r">${c.teto_qtd||0}</td><td class="r">${cons}</td>
       <td class="r" style="color:${saldo<0?'var(--vermelho)':'var(--verde)'}">${saldo} <small style="color:var(--cinza)">(${pct}%)</small></td>
-      <td class="r">${money(norte)}</td><td class="r">${money(ag.rec)}</td><td class="r">${money(ag.desp)}</td>
+      <td class="r">${money(norte)}</td><td class="r">${money(ag.rec)} <small style="color:${pctRec>=100?'var(--verde)':'var(--cinza)'};font-weight:${pctRec>=100?'700':'400'}">(${pctRec}%${pctRec>=100?' ✓':''})</small></td><td class="r">${money(ag.desp)}</td>
       <td class="r" style="color:${liq<0?'var(--vermelho)':'var(--verde)'}">${money(liq)}</td>
       <td class="acts r">${canEdit()?`<button data-teto="${c.id}">✏️</button>`:''}</td></tr>`;
   };
-  return `<table><thead><tr><th>Contrato</th><th class="r">Teto</th><th class="r">Executado</th><th class="r">Saldo</th><th class="r">Norte</th><th class="r">Recebido</th><th class="r">Despesas</th><th class="r">Líquido</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
+  return `<table><thead><tr><th>Contrato</th><th class="r">Teto</th><th class="r">Executado</th><th class="r">Saldo</th><th class="r">Norte</th><th class="r">Recebido (% do teto)</th><th class="r">Despesas</th><th class="r">Líquido</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
 }
 function openTeto(id){
   const c=state.cteto.find(x=>x.id===id);

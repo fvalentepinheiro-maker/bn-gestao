@@ -215,7 +215,6 @@ function dashboard(){
  const metrics=m('Valor contratual vigente',money(sum(xs,'current_contract_value')),xs.length+' contratos ativos')
   +m('Saldo contratual',money(sum(xs,'contractual_balance')),'Valor global atualizado − pagamentos confirmados','green')
   +m('Uso financeiro dos contratos',percentText(contractUsage({current_contract_value:sum(xs,'current_contract_value'),paid_value:sum(xs,'paid_value')})),'Pago acumulado ÷ valor global atualizado')
-  +m('Teto mensal consolidado',money(caps),xs.filter(x=>x.teto==null).length+' contratos sem teto definido')
   +m('Prazos de pagamento',String(pend.length),pend.length?'Próximo prazo: '+date(pend[0].due_date):'Nenhum pagamento pendente cadastrado')
   +m('Aditivos em andamento',String(D('amendments').filter(matches).filter(x=>!['Concluído','Arquivado'].includes(x.status)).length),'Aditivos e apostilamentos')
   +m('Vigências em acompanhamento',String(als.length),als.filter(x=>x.severity==='critical').length+' em alerta','red');
