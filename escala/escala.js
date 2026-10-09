@@ -324,62 +324,44 @@ function turnoCell(unit, iso, pr) {
 const MESNOME = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const rateFor2 = (uid, pk) => state.rates.find(r => r.unit_id === uid && r.period_key === pk) || { billing_per_patient: 0, transfer_per_patient: 0 };
 function renderFinanceiro(el) {
-  const slotsOk = (state.allSlots || []).filter(s => ['preenchido', 'confirmado'].includes(s.status));
+  const agg = aggregatePhysicianMonth(state.slots, state.rates);
+  const comp = state.month + '-01';
+  const taxa = state.units[0]?.tax_rate ?? 0.17;
 
-  // --- Resultado por unidade de negócio (acumulado) ---
-  const porUni = {};
-  for (const s of slotsOk) {
-    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
-    const o = porUni[s.unit_id] || { pac: 0, fat: 0, rep: 0 };
-    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0);
-    porUni[s.unit_id] = o;
-  }
-  const cores = ['#1a4fa0', '#0e7c5a', '#14688b', '#6b46c1', '#b45309', '#be185d'];
-  const cards = state.units.filter(u => porUni[u.id]).map((u, i) => {
-    const o = porUni[u.id], tax = Number(u.tax_rate || 0), imp = o.fat * tax, res = o.fat - o.rep - imp, cor = cores[i % cores.length];
-    const lin = (k, v, c) => `<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#667">${k}</span><b${c ? ' style="color:' + c + '"' : ''}>${v}</b></div>`;
-    return `<div style="flex:1;min-width:220px;background:#fff;border:1px solid #dde1e8;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.05)">
-      <div style="background:${cor};color:#fff;padding:10px 14px;font-weight:700">${esc(u.name)}</div>
-      <div style="padding:12px 14px;font-size:.86rem">
-        ${lin('Pacientes', o.pac)}${lin('Faturamento', money(o.fat), '#1a4fa0')}${lin('Repasse', money(o.rep), 'var(--vermelho,#c62828)')}${lin('Imposto (' + (tax * 100).toFixed(0) + '%)', money(imp), 'var(--laranja,#ea580c)')}
-        <div style="border-top:1px solid #eef2f7;margin-top:5px;padding-top:5px">${lin('Resultado', money(res), 'var(--verde,#0e7c5a)')}</div>
-      </div></div>`;
-  }).join('');
+  const totFat = round2(agg.reduce((n, a) => n + a.faturamento_devido, 0));
+  const totRep = round2(agg.reduce((n, a) => n + a.repasse_devido, 0));
+  const totImp = imposto(totFat, taxa);
+  const totMar = margem(totFat, totRep, taxa);
 
-  // --- Repasse por profissional, unidade e mês (todos os meses) ---
-  const grp = {};
-  for (const s of slotsOk) {
-    const comp = (s.slot_date || '').slice(0, 7); if (!comp || !s.physician_id) continue;
-    const r = rateFor2(s.unit_id, s.period_key), q = Number(s.patients || 0);
-    const k = s.physician_id + '|' + s.unit_id + '|' + comp;
-    const o = grp[k] || { phys: s.physician_id, unit: s.unit_id, comp: comp, pac: 0, fat: 0, rep: 0 };
-    o.pac += q; o.fat += q * Number(r.billing_per_patient || 0); o.rep += q * Number(r.transfer_per_patient || 0);
-    grp[k] = o;
-  }
-  const payOf = (phys, unit, comp) => (state.allPayments || []).find(p => p.physician_id === phys && p.unit_id === unit && (p.competence || '').slice(0, 7) === comp) || {};
-  const linhas = Object.values(grp).sort((a, b) => physName(a.phys).localeCompare(physName(b.phys)) || (a.comp < b.comp ? -1 : 1)).map(g => {
-    const u = unitBySlug_byId(g.unit), pay = payOf(g.phys, g.unit, g.comp), p = g.comp.split('-');
-    const sp = statusValor(pay.paid_value, g.rep), sr = statusValor(pay.received_value, g.fat);
+  const linhas = agg.sort((a, b) => physName(a.physician_id).localeCompare(physName(b.physician_id))).map(a => {
+    const pay = state.payments.find(p => p.physician_id === a.physician_id && p.unit_id === a.unit_id && p.competence === comp) || {};
+    const u = unitBySlug_byId(a.unit_id);
+    const sp = statusValor(pay.paid_value, a.repasse_devido);
+    const sr = statusValor(pay.received_value, a.faturamento_devido);
     return `<tr>
-      <td><b>${esc(physName(g.phys))}</b></td>
+      <td>${esc(physName(a.physician_id))}</td>
       <td>${esc(u?.name || '')}</td>
-      <td>${MESNOME[parseInt(p[1]) - 1]}/${p[0]}</td>
-      <td>${g.pac}</td>
-      <td style="color:var(--vermelho,#c62828)">${money(g.rep)}</td>
-      <td><input type="number" step="0.01" value="${pay.paid_value ?? 0}" ${canEdit() ? '' : 'disabled'} onchange="BN.pagarComp('${g.phys}','${g.unit}','${g.comp}-01','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
-      <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'} onchange="BN.pagarComp('${g.phys}','${g.unit}','${g.comp}-01','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
-      <td><button class="btn" title="Enviar produção ao médico" onclick="BN.abrirProducaoMedico('${g.phys}')">📨</button></td>
+      <td>${a.pacientes}</td>
+      <td>${money(a.faturamento_devido)}</td>
+      <td>${money(a.repasse_devido)}</td>
+      <td><input type="number" step="0.01" value="${pay.paid_value ?? 0}" ${canEdit() ? '' : 'disabled'}
+           onchange="BN.pagar('${a.physician_id}','${a.unit_id}','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
+      <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'}
+           onchange="BN.pagar('${a.physician_id}','${a.unit_id}','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
     </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <h3 style="margin:0 0 10px">Resultado por unidade de negócio <small style="color:#667;font-weight:400">(acumulado)</small></h3>
-    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:22px">${cards || '<div class="vazio-aviso">Sem produção lançada.</div>'}</div>
-    <h3 style="margin:0 0 10px">Repasse por profissional, unidade e mês</h3>
-    ${Object.keys(grp).length ? `<table>
-      <thead><tr><th>Médico</th><th>Unidade</th><th>Mês</th><th>Pac.</th><th>Repasse</th><th>Pago ao médico</th><th>Recebido por nós</th><th></th></tr></thead>
+    <div class="cards-kpi">
+      <div class="kpi"><div class="rotulo">Faturamento previsto</div><div class="valor">${money(totFat)}</div></div>
+      <div class="kpi"><div class="rotulo">Repasse aos médicos</div><div class="valor" style="color:var(--verde)">${money(totRep)}</div></div>
+      <div class="kpi"><div class="rotulo">Imposto (${(taxa * 100).toFixed(0)}%)</div><div class="valor" style="color:var(--laranja)">${money(totImp)}</div></div>
+      <div class="kpi"><div class="rotulo">Margem (fat − repasse − imposto)</div><div class="valor" style="color:var(--azul)">${money(totMar)}</div></div>
+    </div>
+    ${agg.length ? `<table>
+      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th></tr></thead>
       <tbody>${linhas}</tbody>
-    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada.</div>'}`;
+    </table>` : '<div class="vazio-aviso">Nenhuma produção lançada nesta competência.</div>'}`;
 }
 
 // ---- cadastro de médicos ----
