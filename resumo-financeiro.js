@@ -122,7 +122,8 @@
             if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(w, anchor.nextSibling);
             else if (view.parentNode) view.parentNode.insertBefore(w, view);
           }
-          w.innerHTML = content;
+          // só reescreve quando o conteúdo muda — evita loop com o MutationObserver
+          if (w.__bnsig !== content) { w.__bnsig = content; w.innerHTML = content; }
         });
       } catch (e) { }
     } else { ['bnfin', 'bnprod'].forEach(function (id) { var ex = document.getElementById(id); if (ex) ex.remove(); }); }
