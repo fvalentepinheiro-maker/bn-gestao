@@ -173,6 +173,7 @@ function render() {
       <input type="month" value="${state.month}" onchange="BN.mes(this.value)">
       ${canEdit() && !['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirMarcarPeriodo('${unitBySlug(state.tab)?.id}')">📅 Marcar período</button>` : ''}
       ${!['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirPDF('${unitBySlug(state.tab)?.id}')">📄 Gerar PDF faturamento</button>` : ''}
+      ${canEdit() && !['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirImportar('${unitBySlug(state.tab)?.id}')">📥 Importar</button>` : ''}
       ${!canEdit() ? '<span class="info" style="color:var(--laranja)">Seu perfil é somente consulta.</span>' : ''}
     </div>
     <div class="painel" id="painel"></div>`;
@@ -432,6 +433,26 @@ function abrirEditarMedico(id) {
   ov.classList.add('visivel');
 }
 
+// ---- modal: importar escala em lote (colar de planilha/CSV) ----
+function abrirImportar(unitId) {
+  const u = state.units.find(x => x.id === unitId); if (!u) { toast('Abra uma unidade.', true); return; }
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal" style="max-width:640px">
+    <h3>Importar escala — ${esc(u.name)}</h3>
+    <p>Cole os dados (de planilha/Excel ou CSV). Uma linha por lançamento, colunas nesta ordem:</p>
+    <p style="font-family:monospace;font-size:.8rem;background:#f3f6f9;padding:8px;border-radius:6px">data ; turno ; médico ; pacientes ; situação</p>
+    <p style="font-size:.8rem;color:#667">• <b>data</b>: 25/08/2026 ou 2026-08-25 &nbsp; • <b>turno</b>: manha / tarde / extra &nbsp; • <b>situação</b>: confirmado / realizado / cancelado (padrão: confirmado). Aceita vírgula, ponto-e-vírgula ou TAB entre colunas. Primeira linha de cabeçalho é ignorada.</p>
+    <textarea id="impTxt" style="width:100%;height:160px;font-family:monospace;font-size:.82rem" placeholder="25/08/2026; manha; Ana Caroline; 43; confirmado
+25/08/2026; tarde; Gildeone Farias; 48; confirmado"></textarea>
+    <div class="err" id="impErr"></div>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.importar('${unitId}')">Importar</button>
+      <button class="btn" onclick="BN.fecharModal()">Cancelar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+}
+
 // ---- modal: período da fatura antes de gerar o PDF ----
 function abrirPDF(unitId) {
   const u = state.units.find(x => x.id === unitId); if (!u) { toast('Abra uma unidade.', true); return; }
@@ -491,7 +512,51 @@ const BN = {
   sair() { setSession(null); state.profile = null; render(); },
   tab(k) { state.tab = k; render(); },
   async mes(v) { state.month = v; app.querySelector('#painel').innerHTML = '<div class="vazio-aviso">Carregando…</div>'; await loadMonth(); render(); },
-  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico, abrirEditarServico, abrirPDF,
+  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico, abrirEditarServico, abrirPDF, abrirImportar,
+  async importar(unitId) {
+    const u = state.units.find(x => x.id === unitId); if (!u) return;
+    const ta = document.getElementById('impTxt'); const raw = (ta && ta.value || '').trim();
+    const errEl = document.getElementById('impErr');
+    if (!raw) { if (errEl) errEl.textContent = 'Cole os dados primeiro.'; return; }
+    const low = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const parseDate = s => {
+      s = String(s || '').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (m) { let y = m[3]; if (y.length === 2) y = '20' + y; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
+      return null;
+    };
+    const turnoOf = s => { s = low(s); if (s.startsWith('manh')) return 'manha'; if (s.startsWith('tard')) return 'tarde'; if (s.startsWith('ext')) return 'extra'; if (s.startsWith('interm')) return 'intermediario'; if (s.startsWith('turn')) return 'turno'; return s; };
+    const statusOf = s => { s = low(s); if (!s || s.startsWith('conf')) return 'confirmado'; if (s.startsWith('real') || s.startsWith('preen')) return 'preenchido'; if (s.startsWith('canc')) return 'cancelado'; if (s.startsWith('vag')) return 'vago'; return 'confirmado'; };
+    let lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines[0] && /data/i.test(lines[0]) && /(m[eé]dico|paciente|turno|situa)/i.test(lines[0])) lines.shift();
+    const rows = [], erros = [], medicos = new Set();
+    lines.forEach((ln, i) => {
+      const c = ln.split(/[\t;,]/).map(x => x.trim());
+      const dt = parseDate(c[0]);
+      if (!dt) { erros.push('linha ' + (i + 1) + ': data inválida'); return; }
+      const turno = turnoOf(c[1] || ''); const med = (c[2] || '').trim(); const pac = parseInt(c[3]) || 0; const st = statusOf(c[4]);
+      if (med) medicos.add(med);
+      rows.push({ dt, turno, med, pac, st });
+    });
+    if (!rows.length) { if (errEl) errEl.textContent = 'Nada válido pra importar. ' + (erros[0] || ''); return; }
+    this.fecharModal();
+    try {
+      // garante médicos e vínculo com a unidade
+      for (const nome of medicos) {
+        let p = state.physicians.find(x => low(x.full_name) === low(nome));
+        if (!p) { const r = await upsert('cm_physicians', { full_name: nome }, 'id'); p = r[0]; state.physicians.push(p); }
+        try { await upsert('cm_physician_units', { physician_id: p.id, unit_id: unitId }, 'physician_id,unit_id'); } catch (e) { }
+      }
+      const body = rows.map(r => {
+        const phys = r.med ? (state.physicians.find(x => low(x.full_name) === low(r.med)) || {}).id : null;
+        return { unit_id: unitId, slot_date: r.dt, period_key: r.turno, physician_id: phys || null, status: r.st, patients: r.pac, contract_id: u.contract_id || null, notes: 'Importado' };
+      });
+      await upsert('cm_schedule_slots', body, 'unit_id,slot_date,period_key');
+      await loadData(); render();
+      toast(rows.length + ' lançamentos importados' + (erros.length ? ' (' + erros.length + ' linhas ignoradas)' : '') + '.');
+    } catch (e) { toast(e.message, true); }
+  },
   fecharModal() { document.getElementById('overlay').classList.remove('visivel'); },
   async salvarServico(id) {
     const nome = document.getElementById('esNome').value.trim();
