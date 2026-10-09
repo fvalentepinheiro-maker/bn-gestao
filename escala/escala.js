@@ -348,6 +348,7 @@ function renderFinanceiro(el) {
            onchange="BN.pagar('${a.physician_id}','${a.unit_id}','paid_value',this.value)"> <span class="chip ${sp.cls}">${sp.txt}</span></td>
       <td><input type="number" step="0.01" value="${pay.received_value ?? 0}" ${canEdit() ? '' : 'disabled'}
            onchange="BN.pagar('${a.physician_id}','${a.unit_id}','received_value',this.value)"> <span class="chip ${sr.cls}">${sr.txt}</span></td>
+      <td><button class="btn" title="Produção do médico (enviar)" onclick="BN.abrirProducaoMedico('${a.physician_id}')">📨</button></td>
     </tr>`;
   }).join('');
 
@@ -359,7 +360,7 @@ function renderFinanceiro(el) {
       <div class="kpi"><div class="rotulo">Margem (fat − repasse − imposto)</div><div class="valor" style="color:var(--azul)">${money(totMar)}</div></div>
     </div>
     ${agg.length ? `<table>
-      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th></tr></thead>
+      <thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th>Faturamento</th><th>Repasse devido</th><th>Pago ao médico</th><th>Recebido do cliente</th><th></th></tr></thead>
       <tbody>${linhas}</tbody>
     </table>` : '<div class="vazio-aviso">Nenhuma produção lançada nesta competência.</div>'}`;
 }

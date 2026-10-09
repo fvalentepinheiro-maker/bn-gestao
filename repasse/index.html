@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gerencial BN | Repasse médico</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--azul:#1a4fa0;--verde:#0e7c5a;--vermelho:#c62828;--laranja:#ea580c;--cinza:#6b7280}
+body{font-family:Inter,system-ui,sans-serif;background:#eef2f6;color:#1f2a37;padding:22px}
+h1{font-size:1.4rem;color:#0f2a4a}
+.top{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.muted{color:var(--cinza);font-size:.85rem}
+a.volta{color:var(--azul);text-decoration:none;font-size:.85rem}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;background:#fff;border:1px solid #dde1e8;border-radius:12px;padding:12px 14px;margin-bottom:16px}
+.bar label{font-size:.78rem;color:var(--cinza);display:flex;flex-direction:column;gap:3px}
+.bar input,.bar select{padding:7px 9px;border:1px solid #cdd5df;border-radius:8px;font-size:.9rem}
+.seg{display:inline-flex;border:1px solid #cdd5df;border-radius:8px;overflow:hidden}
+.seg button{border:0;background:#fff;padding:7px 12px;cursor:pointer;font-size:.85rem}
+.seg button.on{background:var(--azul);color:#fff}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dde1e8;border-radius:12px;overflow:hidden}
+th{background:#f3f6f9;text-align:left;padding:10px 12px;font-size:.76rem;color:var(--cinza);text-transform:uppercase;letter-spacing:.3px}
+td{padding:9px 12px;border-top:1px solid #eef2f7;font-size:.9rem}
+.r{text-align:right}
+td input{width:110px;padding:5px 7px;border:1px solid #cdd5df;border-radius:6px}
+.btn{border:1px solid #cdd5df;background:#fff;border-radius:7px;padding:6px 10px;cursor:pointer;font-size:.85rem}
+.btn.prim{background:var(--azul);color:#fff;border-color:var(--azul)}
+.chip{font-size:.72rem;padding:2px 6px;border-radius:999px}
+.chip.ok{background:#e6f5ee;color:var(--verde)}.chip.pend{background:#fde8e8;color:var(--vermelho)}.chip.part{background:#fff4e5;color:var(--laranja)}
+.vazio{padding:24px;text-align:center;color:var(--cinza)}
+.overlay{position:fixed;inset:0;background:rgba(15,25,40,.45);display:none;align-items:center;justify-content:center;padding:16px;z-index:50}
+.overlay.on{display:flex}
+.modal{background:#fff;border-radius:14px;padding:20px;max-width:640px;width:100%;max-height:90vh;overflow:auto}
+.modal h3{margin-bottom:6px}
+.modal label{display:block;margin:8px 0 2px;font-size:.82rem;color:var(--cinza)}
+.modal input,.modal select{width:100%;padding:8px;border:1px solid #cdd5df;border-radius:8px}
+pre{white-space:pre-wrap;background:#f3f6f9;border-radius:8px;padding:12px;font-size:.82rem;max-height:240px;overflow:auto;margin:10px 0}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.login{max-width:360px;margin:60px auto;background:#fff;border:1px solid #dde1e8;border-radius:14px;padding:24px}
+.login input{width:100%;padding:9px;border:1px solid #cdd5df;border-radius:8px;margin:4px 0 12px}
+.err{color:var(--vermelho);font-size:.85rem;margin:6px 0}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.kpi{flex:1;min-width:170px;background:#fff;border:1px solid #dde1e8;border-radius:12px;padding:12px 14px}
+.kpi .k{font-size:.74rem;color:var(--cinza)}.kpi .v{font-size:1.25rem;font-weight:700;margin-top:3px}
+</style>
+</head>
+<body>
+<script>
+globalThis.GSER_CONFIG = {
+  supabaseUrl: 'https://twpndwaxxwduhouoauiu.supabase.co',
+  supabasePublishableKey: 'sb_publishable_SlrJkFzc5ldN7E5xbksqJg_p4zGCzXP',
+  sessionKey: 'gser.session.v1'
+};
+</script>
+<div id="app"></div>
+<div id="ov" class="overlay"><div class="modal" id="modal"></div></div>
+<script type="module">
+const cfg=globalThis.GSER_CONFIG||{};
+const URL=String(cfg.supabaseUrl||'').replace(/\/+$/,'');
+const KEY=String(cfg.supabasePublishableKey||'');
+const SK=cfg.sessionKey||'gser.session.v1';
+const MES=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const app=document.getElementById('app'), ov=document.getElementById('ov'), modal=document.getElementById('modal');
+let sess=null; try{sess=JSON.parse(localStorage.getItem(SK))}catch{}
+const state={sess,profile:null,units:[],physicians:[],rates:[],slots:[],payments:[],
+  mode:'mensal',month:new Date().toISOString().slice(0,7),ini:'',fim:'',err:''};
+const money=x=>Number(x||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function setSess(s){state.sess=s; s?localStorage.setItem(SK,JSON.stringify(s)):localStorage.removeItem(SK);}
+async function req(path,{method='GET',body,auth=true,headers={}}={}){
+  if(auth&&state.sess&&state.sess.expires_at<Date.now()/1000+45){
+    try{const s=await req('/auth/v1/token?grant_type=refresh_token',{method:'POST',auth:false,body:{refresh_token:state.sess.refresh_token}});
+      setSess({...s,expires_at:Math.floor(Date.now()/1000)+s.expires_in});}catch{setSess(null);}
+  }
+  const h={apikey:KEY,...(auth&&state.sess?{Authorization:'Bearer '+state.sess.access_token}:{}),...headers};
+  if(body!==undefined){h['Content-Type']='application/json';body=JSON.stringify(body);}
+  const r=await fetch(URL+path,{method,headers:h,body});
+  if(!r.ok){let e;try{e=await r.json()}catch{e={message:'Falha ('+r.status+')'}}throw new Error(e.msg||e.message||e.error_description||e.error||'Erro');}
+  if(r.status===204)return null;
+  const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
+}
+const rows=(t,q='')=>req('/rest/v1/'+t+'?select=*'+q+'&limit=5000');
+const canEdit=()=>state.profile?.is_active&&['manager','operator'].includes(state.profile.role);
+const physName=id=>state.physicians.find(p=>p.id===id)?.full_name||'—';
+const unitName=id=>state.units.find(u=>u.id===id)?.name||'';
+const rfor=(uid,pk)=>state.rates.find(r=>r.unit_id===uid&&r.period_key===pk)||{billing_per_patient:0,transfer_per_patient:0};
+const okSlot=s=>['preenchido','confirmado'].includes(s.status)&&Number(s.patients||0)>0;
+
+async function login(email,password){
+  const s=await req('/auth/v1/token?grant_type=password',{method:'POST',auth:false,body:{email,password}});
+  setSess({...s,expires_at:Math.floor(Date.now()/1000)+s.expires_in});
+}
+async function loadProfile(){const uid=state.sess?.user?.id;if(!uid)return null;try{const p=await rows('cm_profiles','&id=eq.'+uid);return p&&p[0]||null;}catch{return null;}}
+async function loadData(){
+  const [u,p,rt,sl,pay]=await Promise.all([
+    rows('cm_schedule_units','&order=display_order'),
+    rows('cm_physicians','&order=full_name'),
+    rows('cm_schedule_period_rates'),
+    rows('cm_schedule_slots','&select=unit_id,slot_date,period_key,physician_id,patients,status&order=slot_date'),
+    rows('cm_physician_payments'),
+  ]);
+  state.units=u||[];state.physicians=p||[];state.rates=rt||[];state.slots=sl||[];state.payments=pay||[];
+}
+
+// ---- período ----
+function inRange(dt){
+  if(state.mode==='todo')return true;
+  if(state.mode==='mensal')return (dt||'').slice(0,7)===state.month;
+  if(state.mode==='custom')return (!state.ini||dt>=state.ini)&&(!state.fim||dt<=state.fim);
+  return true;
+}
+function compsInRange(){
+  const set=new Set();
+  for(const s of state.slots){ if(okSlot(s)&&inRange(s.slot_date)){const c=(s.slot_date||'').slice(0,7);if(c)set.add(c);} }
+  return [...set];
+}
+function payInRange(phys,unit){
+  const comps=state.mode==='mensal'?[state.month]:compsInRange();
+  return state.payments.filter(p=>p.physician_id===phys&&p.unit_id===unit&&comps.includes((p.competence||'').slice(0,7)));
+}
+
+// ---- agregações ----
+function agg(){
+  const g={};
+  for(const s of state.slots){
+    if(!okSlot(s)||!s.physician_id||!inRange(s.slot_date))continue;
+    const r=rfor(s.unit_id,s.period_key),q=Number(s.patients||0);
+    const k=s.physician_id+'|'+s.unit_id;
+    const o=g[k]||{phys:s.physician_id,unit:s.unit_id,pac:0,rep:0};
+    o.pac+=q;o.rep+=q*Number(r.transfer_per_patient||0);g[k]=o;
+  }
+  return Object.values(g).sort((a,b)=>physName(a.phys).localeCompare(physName(b.phys))||unitName(a.unit).localeCompare(unitName(b.unit)));
+}
+function chip(val,base){const v=Number(val||0);if(!v)return '<span class="chip pend">pendente</span>';if(v>=base-0.01)return '<span class="chip ok">ok</span>';return '<span class="chip part">parcial</span>';}
+
+async function savePay(phys,unit,comp,field,val){
+  const ex=state.payments.find(p=>p.physician_id===phys&&p.unit_id===unit&&p.competence===comp)||{};
+  const body={physician_id:phys,unit_id:unit,competence:comp,
+    paid_value:ex.paid_value??0,paid_patients:ex.paid_patients??0,paid_at:ex.paid_at??null,
+    received_value:ex.received_value??0,received_patients:ex.received_patients??0,received_at:ex.received_at??null,
+    [field]:Math.max(0,Number(String(val).replace(',','.'))||0)};
+  try{
+    const [saved]=await req('/rest/v1/cm_physician_payments?on_conflict=physician_id,unit_id,competence',
+      {method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body});
+    const i=state.payments.findIndex(p=>p.physician_id===phys&&p.unit_id===unit&&p.competence===comp);
+    if(i>=0)state.payments[i]=saved;else state.payments.push(saved);
+  }catch(e){alert(e.message);}
+}
+window.RP={
+  async pay(phys,unit,field,val){await savePay(phys,unit,state.month+'-01',field,val);render();},
+  mode(m){state.mode=m;render();},
+  mes(v){state.month=v;render();},
+  ini(v){state.ini=v;render();},
+  fim(v){state.fim=v;render();},
+  flag:abrirFlag,
+  fechar(){ov.classList.remove('on');},
+  refresh:refreshFlag,
+  async copiar(){const t=(document.getElementById('pmPre')||{}).textContent||'';try{await navigator.clipboard.writeText(t);alert('Mensagem copiada!');}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');alert('Copiado!');}catch(_){alert('Copie manualmente.');}ta.remove();}},
+  async entrar(){try{await login(document.getElementById('le').value.trim(),document.getElementById('lp').value);await boot();}catch(e){state.err=/Invalid login/.test(e.message)?'E-mail ou senha incorretos.':e.message;render();}},
+  sair(){setSess(null);state.profile=null;render();},
+};
+
+// ---- flag produção do médico ----
+function prodMsg(physId,comps){
+  const nome=physName(physId);
+  const sl=state.slots.filter(s=>s.physician_id===physId&&okSlot(s)&&comps.includes((s.slot_date||'').slice(0,7))).sort((a,b)=>(a.slot_date||'').localeCompare(b.slot_date||''));
+  let msg='📊 PRODUÇÃO — '+nome+'\nCompetência: '+comps.slice().sort().map(c=>{const p=c.split('-');return MES[parseInt(p[1])-1]+'/'+p[0];}).join(', ')+'\n\n';
+  let tp=0,tr=0;
+  for(const s of sl){const u=unitName(s.unit_id),r=rfor(s.unit_id,s.period_key),q=Number(s.patients||0),rep=q*Number(r.transfer_per_patient||0);tp+=q;tr+=rep;
+    const wd=new Date(s.slot_date+'T12:00').toLocaleDateString('pt-BR',{weekday:'long'});
+    msg+='• '+s.slot_date.slice(8,10)+'/'+s.slot_date.slice(5,7)+' ('+wd.charAt(0).toUpperCase()+wd.slice(1)+') — '+u+' — '+(r.period_label||s.period_key)+' — '+q+' pac. — '+money(rep)+'\n';}
+  msg+='\nTOTAL: '+tp+' pacientes — '+money(tr);return msg;
+}
+function abrirFlag(physId){
+  const comps=[...new Set(state.slots.filter(s=>s.physician_id===physId&&okSlot(s)).map(s=>(s.slot_date||'').slice(0,7)).filter(Boolean))].sort();
+  const medOpts=state.physicians.map(p=>`<option value="${p.id}" ${p.id===physId?'selected':''}>${esc(p.full_name)}</option>`).join('');
+  const def=state.mode==='mensal'?state.month:(comps[comps.length-1]||'');
+  const chks=comps.length?comps.map(c=>{const p=c.split('-');return `<label style="display:inline-flex;align-items:center;gap:4px;margin:0 12px 8px 0;font-size:.85rem;width:auto"><input type="checkbox" class="pmC" value="${c}" ${c===def?'checked':''} onchange="RP.refresh()" style="width:auto"> ${MES[parseInt(p[1])-1]}/${p[0]}</label>`;}).join(''):'<span class="muted">Sem produção lançada.</span>';
+  modal.innerHTML=`<h3>📊 Produção do médico</h3>
+    <p class="muted">Monta a mensagem de produção por dia e o total, pronta pra copiar e enviar ao médico.</p>
+    <label>Médico</label><select id="pmMed" onchange="RP.flag(this.value)">${medOpts}</select>
+    <label>Competência (pode marcar mais de um mês)</label><div>${chks}</div>
+    <pre id="pmPre"></pre>
+    <div class="acts"><button class="btn prim" onclick="RP.copiar()">📋 Copiar mensagem</button><button class="btn" onclick="RP.fechar()">Fechar</button></div>`;
+  ov.classList.add('on');refreshFlag();
+}
+function refreshFlag(){const med=document.getElementById('pmMed')?.value;const comps=[].map.call(document.querySelectorAll('.pmC:checked'),c=>c.value);const pre=document.getElementById('pmPre');if(pre)pre.textContent=comps.length?prodMsg(med,comps):'Marque ao menos uma competência.';}
+
+// ---- render ----
+function render(){
+  if(!state.sess)return renderLogin();
+  const list=agg();
+  const totRep=list.reduce((n,a)=>n+a.rep,0);
+  // pago/recebido no período
+  let totPago=0,totReceb=0;
+  for(const a of list){const ps=payInRange(a.phys,a.unit);totPago+=ps.reduce((n,p)=>n+Number(p.paid_value||0),0);totReceb+=ps.reduce((n,p)=>n+Number(p.received_value||0),0);}
+  const editavel=state.mode==='mensal'&&canEdit();
+  const linhas=list.map(a=>{
+    const ps=payInRange(a.phys,a.unit);
+    const pago=ps.reduce((n,p)=>n+Number(p.paid_value||0),0), receb=ps.reduce((n,p)=>n+Number(p.received_value||0),0);
+    if(editavel){
+      const pay=state.payments.find(p=>p.physician_id===a.phys&&p.unit_id===a.unit&&p.competence===state.month+'-01')||{};
+      return `<tr><td><b>${esc(physName(a.phys))}</b></td><td>${esc(unitName(a.unit))}</td><td>${a.pac}</td>
+        <td class="r">${money(a.rep)}</td>
+        <td><input type="number" step="0.01" value="${pay.paid_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','paid_value',this.value)"> ${chip(pay.paid_value,a.rep)}</td>
+        <td><input type="number" step="0.01" value="${pay.received_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','received_value',this.value)"> ${chip(pay.received_value,a.rep)}</td>
+        <td><button class="btn" title="Produção do médico" onclick="RP.flag('${a.phys}')">📨</button></td></tr>`;
+    }
+    return `<tr><td><b>${esc(physName(a.phys))}</b></td><td>${esc(unitName(a.unit))}</td><td>${a.pac}</td>
+      <td class="r">${money(a.rep)}</td><td class="r">${money(pago)} ${chip(pago,a.rep)}</td><td class="r">${money(receb)} ${chip(receb,a.rep)}</td>
+      <td><button class="btn" onclick="RP.flag('${a.phys}')">📨</button></td></tr>`;
+  }).join('');
+  const seletor=state.mode==='mensal'
+    ? `<label>Competência<input type="month" value="${state.month}" onchange="RP.mes(this.value)"></label>`
+    : state.mode==='custom'
+      ? `<label>De<input type="date" value="${state.ini}" onchange="RP.ini(this.value)"></label><label>Até<input type="date" value="${state.fim}" onchange="RP.fim(this.value)"></label>`
+      : `<span class="muted" style="align-self:center">Todos os meses com produção lançada.</span>`;
+  app.innerHTML=`
+  <div class="top">
+    <div><div class="muted" style="color:var(--azul);font-weight:600;letter-spacing:.5px">GERENCIAL BN</div><h1>Repasse médico</h1><a class="volta" href="../">⟵ Voltar ao programa</a></div>
+    <div><button class="btn" onclick="RP.sair()">Sair</button></div>
+  </div>
+  <div class="bar">
+    <div class="seg">
+      <button class="${state.mode==='mensal'?'on':''}" onclick="RP.mode('mensal')">Mensal</button>
+      <button class="${state.mode==='todo'?'on':''}" onclick="RP.mode('todo')">Período todo</button>
+      <button class="${state.mode==='custom'?'on':''}" onclick="RP.mode('custom')">Personalizado</button>
+    </div>
+    ${seletor}
+  </div>
+  <div class="cards">
+    <div class="kpi"><div class="k">Repasse devido no período</div><div class="v" style="color:var(--vermelho)">${money(totRep)}</div></div>
+    <div class="kpi"><div class="k">Pago aos médicos</div><div class="v" style="color:var(--verde)">${money(totPago)}</div></div>
+    <div class="kpi"><div class="k">Recebido por nós</div><div class="v" style="color:var(--azul)">${money(totReceb)}</div></div>
+    <div class="kpi"><div class="k">A pagar (saldo)</div><div class="v">${money(totRep-totPago)}</div></div>
+  </div>
+  ${list.length?`<table><thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th class="r">Repasse devido</th><th${editavel?'':' class="r"'}>Pago ao médico</th><th${editavel?'':' class="r"'}>Recebido por nós</th><th></th></tr></thead><tbody>${linhas}</tbody></table>
+  ${state.mode!=='mensal'?'<p class="muted" style="margin-top:8px">No modo período, os valores pago/recebido são a soma das competências do período (edição é feita no modo Mensal).</p>':''}`
+  :'<div class="vazio">Nenhuma produção lançada no período.</div>'}`;
+}
+function renderLogin(){
+  app.innerHTML=`<div class="login"><h3>Repasse médico</h3><p class="muted" style="margin-bottom:10px">Entre com sua conta do sistema.</p>
+    <label class="muted">E-mail</label><input id="le" type="email" autocomplete="username">
+    <label class="muted">Senha</label><input id="lp" type="password" autocomplete="current-password">
+    ${state.err?`<div class="err">${esc(state.err)}</div>`:''}
+    <button class="btn prim" style="width:100%" onclick="RP.entrar()">Entrar</button>
+    <p style="margin-top:10px"><a class="volta" href="../">⟵ Voltar ao programa</a></p></div>`;
+}
+async function boot(){
+  if(!state.sess)return render();
+  try{state.profile=await loadProfile();render();await loadData();render();}
+  catch(e){if(/JWT|401|403/i.test(e.message)){setSess(null);return render();}app.innerHTML='<div class="vazio">'+esc(e.message)+'</div>';}
+}
+boot();
+</script>
+</body>
+</html>
