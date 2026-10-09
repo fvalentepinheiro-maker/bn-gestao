@@ -164,6 +164,7 @@ function render() {
     <div class="toolbar">
       <span class="info">Competência</span>
       <input type="month" value="${state.month}" onchange="BN.mes(this.value)">
+      ${canEdit() && !['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirMarcarPeriodo('${unitBySlug(state.tab)?.id}')">📅 Marcar período</button>` : ''}
       ${!canEdit() ? '<span class="info" style="color:var(--laranja)">Seu perfil é somente consulta.</span>' : ''}
     </div>
     <div class="painel" id="painel"></div>`;
@@ -285,7 +286,7 @@ function renderMedicos(el) {
       <td>${esc(p.full_name)}</td><td>${esc(p.crm || '—')}</td><td>${esc(p.specialty || '—')}</td>
       <td>${esc(p.phone || '—')}</td><td>${units.map(esc).join(', ') || '—'}</td>
       <td>${p.is_active ? '<span class="chip completo">ativo</span>' : '<span class="chip pendente">inativo</span>'}</td>
-      ${canEdit() ? `<td><select id="vu_${p.id}"><option value="">unidade…</option>${state.units.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select> <button class="btn" onclick="BN.vincular('${p.id}')">+</button></td>` : ''}
+      ${canEdit() ? `<td><button class="btn" onclick="BN.abrirEditarMedico('${p.id}')">✏️ Editar</button> <select id="vu_${p.id}"><option value="">vincular a…</option>${state.units.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select> <button class="btn" onclick="BN.vincular('${p.id}')">+</button></td>` : ''}
     </tr>`;
   }).join('');
   el.innerHTML = `
@@ -360,6 +361,50 @@ function renderLogin() {
   </div>`;
 }
 
+// ---- modal: marcar período em lote ----
+function abrirMarcarPeriodo(unitId) {
+  const u = state.units.find(x => x.id === unitId); if (!u) { toast('Abra uma unidade para marcar o período.', true); return; }
+  const ini = state.month + '-01';
+  const [y, m] = state.month.split('-').map(Number);
+  const fim = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal">
+    <h3>Marcar período — ${esc(u.name)}</h3>
+    <p>Aplica a situação escolhida apenas aos dias que já têm médico atribuído no intervalo. Dias sem escala não são tocados.</p>
+    <label>De<br><input type="date" id="mpIni" value="${ini}"></label>
+    <label>Até<br><input type="date" id="mpFim" value="${fim}"></label>
+    <label>Situação<br><select id="mpStatus">
+      <option value="confirmado">Confirmado</option>
+      <option value="preenchido">Realizado</option>
+      <option value="cancelado">Cancelado</option>
+    </select></label>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.marcarPeriodo('${unitId}')">Aplicar</button>
+      <button class="btn" onclick="BN.fecharModal()">Cancelar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+}
+
+// ---- modal: editar cadastro do médico ----
+function abrirEditarMedico(id) {
+  const p = state.physicians.find(x => x.id === id); if (!p) return;
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal">
+    <h3>Editar médico</h3>
+    <label>Nome<br><input id="emNome" value="${esc(p.full_name || '')}"></label>
+    <label>CRM<br><input id="emCrm" value="${esc(p.crm || '')}"></label>
+    <label>Especialidade<br><input id="emEsp" value="${esc(p.specialty || '')}"></label>
+    <label>Telefone<br><input id="emTel" value="${esc(p.phone || '')}"></label>
+    <label>Situação<br><select id="emAtivo"><option value="true" ${p.is_active ? 'selected' : ''}>Ativo</option><option value="false" ${!p.is_active ? 'selected' : ''}>Inativo</option></select></label>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.salvarMedico('${id}')">Salvar</button>
+      <button class="btn" onclick="BN.fecharModal()">Cancelar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+}
+
 // =====================================================================
 // AÇÕES EXPOSTAS
 // =====================================================================
@@ -379,7 +424,35 @@ const BN = {
   sair() { setSession(null); state.profile = null; render(); },
   tab(k) { state.tab = k; render(); },
   async mes(v) { state.month = v; app.querySelector('#painel').innerHTML = '<div class="vazio-aviso">Carregando…</div>'; await loadMonth(); render(); },
-  abrirMedico, fecharModal() { document.getElementById('overlay').classList.remove('visivel'); },
+  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico,
+  fecharModal() { document.getElementById('overlay').classList.remove('visivel'); },
+  async marcarPeriodo(unitId) {
+    const a = document.getElementById('mpIni').value, b = document.getElementById('mpFim').value, st = document.getElementById('mpStatus').value;
+    if (!a || !b) { toast('Informe o período.', true); return; }
+    if (a > b) { toast('A data inicial é maior que a final.', true); return; }
+    this.fecharModal();
+    try {
+      await request(`/rest/v1/cm_schedule_slots?unit_id=eq.${unitId}&slot_date=gte.${a}&slot_date=lte.${b}&physician_id=not.is.null`,
+        { method: 'PATCH', body: { status: st }, headers: { Prefer: 'return=minimal' } });
+      await loadMonth(); render();
+      toast('Período marcado.');
+    } catch (e) { toast(e.message, true); }
+  },
+  async salvarMedico(id) {
+    const body = {
+      full_name: document.getElementById('emNome').value.trim(),
+      crm: document.getElementById('emCrm').value.trim() || null,
+      specialty: document.getElementById('emEsp').value.trim() || null,
+      phone: document.getElementById('emTel').value.trim() || null,
+      is_active: document.getElementById('emAtivo').value === 'true',
+    };
+    if (!body.full_name) { toast('Informe o nome.', true); return; }
+    this.fecharModal();
+    try {
+      await request(`/rest/v1/cm_physicians?id=eq.${id}`, { method: 'PATCH', body, headers: { Prefer: 'return=minimal' } });
+      await loadData(); toast('Médico atualizado.'); render();
+    } catch (e) { toast(e.message, true); }
+  },
   async atribuir(unitId, iso, period, pid) {
     this.fecharModal();
     await salvarSlot({ unit_id: unitId, slot_date: iso, period_key: period, physician_id: pid || null, status: pid ? 'preenchido' : 'vago' });
