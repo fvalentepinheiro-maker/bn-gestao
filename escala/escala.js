@@ -85,14 +85,14 @@ async function loadData() {
     rows('cm_physicians', '&order=full_name'),
     rows('cm_physician_units'),
     rows('cm_contracts', '&select=id,contract_number,supplier_name,teto_qtd,valor_norte&order=supplier_name'),
-    rows('cm_schedule_slots', '&select=contract_id,patients,status&contract_id=not.is.null'),
+    rows('cm_schedule_slots', '&select=unit_id,patients,status'),
   ]);
   state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || []; state.contracts = contracts || [];
-  // executado acumulado por contrato (todos os meses) — para bater com o teto
-  state.consumoContrato = {};
+  // executado acumulado por SERVIÇO (todos os meses) — para bater com o teto do serviço
+  state.consumoUnidade = {};
   for (const s of (consumo || [])) {
     if (['preenchido', 'confirmado'].includes(s.status))
-      state.consumoContrato[s.contract_id] = (state.consumoContrato[s.contract_id] || 0) + Number(s.patients || 0);
+      state.consumoUnidade[s.unit_id] = (state.consumoUnidade[s.unit_id] || 0) + Number(s.patients || 0);
   }
   await loadMonth();
 }
@@ -192,10 +192,10 @@ function renderGrade(el, unit) {
   const semanas = semanasDoMes(state.month);
   const diario = aggregateDaily(state.slots.filter(s => s.unit_id === unit.id), state.rates);
 
-  // Banner: serviço × contrato × teto × executado acumulado (bate com o teto)
+  // Banner: serviço × contrato × teto DO SERVIÇO × executado acumulado do serviço
   const contrato = (state.contracts || []).find(c => c.id === unit.contract_id);
-  const teto = Number(contrato?.teto_qtd || 0);
-  const exec = Number(state.consumoContrato?.[unit.contract_id] || 0);
+  const teto = Number(unit.teto_qtd || 0);
+  const exec = Number(state.consumoUnidade?.[unit.id] || 0);
   const saldo = teto - exec;
   const pct = teto ? Math.min(100, Math.round(exec / teto * 100)) : 0;
   const cor = pct >= 100 ? 'var(--verde,#0e7c5a)' : pct >= 90 ? 'var(--laranja,#ea580c)' : 'var(--azul,#14688b)';
@@ -335,13 +335,15 @@ function renderServicos(el) {
   const contrName = id => { const c = (state.contracts || []).find(c => c.id === id); return c ? `${c.contract_number} · ${c.supplier_name}` : '—'; };
   const linhas = state.units.map(u => {
     const rs = ratesOf(u.id).map(r => `${esc(r.period_label)}: ${money(r.billing_per_patient)} / ${money(r.transfer_per_patient)}`).join('<br>');
-    return `<tr><td>${esc(u.name)}</td><td>${esc(contrName(u.contract_id))}</td><td>${((u.tax_rate || 0) * 100).toFixed(0)}%</td><td>${rs || '—'}</td></tr>`;
+    return `<tr><td>${esc(u.name)}</td><td>${esc(contrName(u.contract_id))}</td><td class="r">${u.teto_qtd || '—'}</td><td class="r">${u.valor_norte != null ? money(u.valor_norte) : '—'}</td><td>${((u.tax_rate || 0) * 100).toFixed(0)}%</td><td>${rs || '—'}</td>${canEdit() ? `<td><button class="btn" onclick="BN.abrirEditarServico('${u.id}')">✏️ Editar</button></td>` : ''}</tr>`;
   }).join('');
   const contrOpts = ['<option value="">— contrato —</option>', ...(state.contracts || []).map(c => `<option value="${c.id}">${esc(c.contract_number)} · ${esc(c.supplier_name)}</option>`)].join('');
   el.innerHTML = `
     ${canEdit() ? `<div class="row-form">
       <label>Serviço/Unidade<input type="text" id="svNome" placeholder="Ex.: Mãe do Rio"></label>
       <label>Contrato<select id="svContr">${contrOpts}</select></label>
+      <label>Teto (atend.)<input type="number" id="svTeto" placeholder="0" style="width:90px"></label>
+      <label>Valor-norte R$<input type="number" step="0.01" id="svNorte" placeholder="0" style="width:90px"></label>
       <label>Imposto %<input type="number" id="svTax" value="17" style="width:70px"></label>
       <label>Manhã fat.<input type="number" id="svMF" value="0" style="width:80px"></label>
       <label>Manhã rep.<input type="number" id="svMR" value="0" style="width:80px"></label>
@@ -350,8 +352,8 @@ function renderServicos(el) {
       <button class="btn primario" onclick="BN.addServico()">Cadastrar serviço</button>
     </div>` : ''}
     <table>
-      <thead><tr><th>Serviço / Unidade</th><th>Contrato</th><th>Imposto</th><th>Turnos (faturamento / repasse por paciente)</th></tr></thead>
-      <tbody>${linhas || '<tr><td colspan="4" class="vazio-aviso">Nenhum serviço cadastrado.</td></tr>'}</tbody>
+      <thead><tr><th>Serviço / Unidade</th><th>Contrato</th><th class="r">Teto</th><th class="r">Valor-norte</th><th>Imposto</th><th>Turnos (faturamento / repasse por paciente)</th>${canEdit() ? '<th></th>' : ''}</tr></thead>
+      <tbody>${linhas || '<tr><td colspan="7" class="vazio-aviso">Nenhum serviço cadastrado.</td></tr>'}</tbody>
     </table>`;
 }
 
@@ -430,6 +432,26 @@ function abrirEditarMedico(id) {
   ov.classList.add('visivel');
 }
 
+// ---- modal: editar serviço (teto por serviço) ----
+function abrirEditarServico(id) {
+  const u = state.units.find(x => x.id === id); if (!u) return;
+  const contrOpts = ['<option value="">— sem contrato —</option>', ...(state.contracts || []).map(c => `<option value="${c.id}" ${c.id === u.contract_id ? 'selected' : ''}>${esc(c.contract_number)} · ${esc(c.supplier_name)}</option>`)].join('');
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal">
+    <h3>Editar serviço</h3>
+    <label>Nome<br><input id="esNome" value="${esc(u.name || '')}"></label>
+    <label>Contrato<br><select id="esContr">${contrOpts}</select></label>
+    <label>Teto (nº de atendimentos)<br><input type="number" id="esTeto" value="${u.teto_qtd ?? ''}"></label>
+    <label>Valor-norte (R$/atendimento)<br><input type="number" step="0.01" id="esNorte" value="${u.valor_norte ?? ''}"></label>
+    <label>Imposto %<br><input type="number" id="esTax" value="${((u.tax_rate || 0) * 100).toFixed(0)}"></label>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.salvarServico('${id}')">Salvar</button>
+      <button class="btn" onclick="BN.fecharModal()">Cancelar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+}
+
 // =====================================================================
 // AÇÕES EXPOSTAS
 // =====================================================================
@@ -449,8 +471,24 @@ const BN = {
   sair() { setSession(null); state.profile = null; render(); },
   tab(k) { state.tab = k; render(); },
   async mes(v) { state.month = v; app.querySelector('#painel').innerHTML = '<div class="vazio-aviso">Carregando…</div>'; await loadMonth(); render(); },
-  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico,
+  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico, abrirEditarServico,
   fecharModal() { document.getElementById('overlay').classList.remove('visivel'); },
+  async salvarServico(id) {
+    const nome = document.getElementById('esNome').value.trim();
+    if (!nome) { toast('Informe o nome.', true); return; }
+    const body = {
+      name: nome,
+      contract_id: document.getElementById('esContr').value || null,
+      teto_qtd: parseInt(document.getElementById('esTeto').value) || null,
+      valor_norte: parseFloat(document.getElementById('esNorte').value) || null,
+      tax_rate: (parseFloat(document.getElementById('esTax').value) || 0) / 100,
+    };
+    this.fecharModal();
+    try {
+      await request(`/rest/v1/cm_schedule_units?id=eq.${id}`, { method: 'PATCH', body, headers: { Prefer: 'return=minimal' } });
+      await loadData(); toast('Serviço atualizado.'); render();
+    } catch (e) { toast(e.message, true); }
+  },
   async marcarPeriodo(unitId) {
     const a = document.getElementById('mpIni').value, b = document.getElementById('mpFim').value, st = document.getElementById('mpStatus').value;
     if (!a || !b) { toast('Informe o período.', true); return; }
@@ -530,6 +568,8 @@ const BN = {
       const [u] = await upsert('cm_schedule_units', {
         name: nome, slug, color: '#0a7fa8', tax_rate: num('svTax') / 100,
         display_order: ord, contract_id: document.getElementById('svContr').value || null,
+        teto_qtd: parseInt(document.getElementById('svTeto').value) || null,
+        valor_norte: parseFloat(document.getElementById('svNorte').value) || null,
       }, 'slug');
       await upsert('cm_schedule_period_rates', [
         { unit_id: u.id, period_key: 'manha', period_label: 'Manhã', billing_per_patient: num('svMF'), transfer_per_patient: num('svMR'), display_order: 1 },
