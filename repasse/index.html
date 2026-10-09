@@ -120,19 +120,21 @@ function payInRange(phys,unit){
   return state.payments.filter(p=>p.physician_id===phys&&p.unit_id===unit&&comps.includes((p.competence||'').slice(0,7)));
 }
 
-// ---- agregações ----
+// ---- agregações (uma linha por médico × unidade × competência) ----
 function agg(){
   const g={};
   for(const s of state.slots){
     if(!okSlot(s)||!s.physician_id||!inRange(s.slot_date))continue;
     if(state.unit&&s.unit_id!==state.unit)continue;
+    const comp=(s.slot_date||'').slice(0,7); if(!comp)continue;
     const r=rfor(s.unit_id,s.period_key),q=Number(s.patients||0);
-    const k=s.physician_id+'|'+s.unit_id;
-    const o=g[k]||{phys:s.physician_id,unit:s.unit_id,pac:0,rep:0};
+    const k=s.physician_id+'|'+s.unit_id+'|'+comp;
+    const o=g[k]||{phys:s.physician_id,unit:s.unit_id,comp:comp,pac:0,rep:0};
     o.pac+=q;o.rep+=q*Number(r.transfer_per_patient||0);g[k]=o;
   }
-  return Object.values(g).sort((a,b)=>physName(a.phys).localeCompare(physName(b.phys))||unitName(a.unit).localeCompare(unitName(b.unit)));
+  return Object.values(g).sort((a,b)=>physName(a.phys).localeCompare(physName(b.phys))||unitName(a.unit).localeCompare(unitName(b.unit))||(a.comp<b.comp?-1:1));
 }
+const payFor=(phys,unit,comp)=>state.payments.find(p=>p.physician_id===phys&&p.unit_id===unit&&(p.competence||'').slice(0,7)===comp)||{};
 function chip(val,base){const v=Number(val||0);if(!v)return '<span class="chip pend">pendente</span>';if(v>=base-0.01)return '<span class="chip ok">ok</span>';return '<span class="chip part">parcial</span>';}
 
 async function savePay(phys,unit,comp,field,val){
@@ -149,7 +151,7 @@ async function savePay(phys,unit,comp,field,val){
   }catch(e){alert(e.message);}
 }
 window.RP={
-  async pay(phys,unit,field,val){await savePay(phys,unit,state.month+'-01',field,val);render();},
+  async pay(phys,unit,comp,field,val){await savePay(phys,unit,comp,field,val);render();},
   mode(m){state.mode=m;render();},
   unit(v){state.unit=v;render();},
   mes(v){state.month=v;render();},
@@ -193,25 +195,16 @@ function refreshFlag(){const med=document.getElementById('pmMed')?.value;const c
 function render(){
   if(!state.sess)return renderLogin();
   const list=agg();
-  const totRep=list.reduce((n,a)=>n+a.rep,0);
-  // pago/recebido no período
-  let totPago=0,totReceb=0;
-  for(const a of list){const ps=payInRange(a.phys,a.unit);totPago+=ps.reduce((n,p)=>n+Number(p.paid_value||0),0);totReceb+=ps.reduce((n,p)=>n+Number(p.received_value||0),0);}
-  const editavel=state.mode==='mensal'&&canEdit();
+  const ed=canEdit();
+  let totRep=0,totPago=0,totReceb=0;
+  list.forEach(a=>{const pay=payFor(a.phys,a.unit,a.comp);totRep+=a.rep;totPago+=Number(pay.paid_value||0);totReceb+=Number(pay.received_value||0);});
   const linhas=list.map(a=>{
-    const ps=payInRange(a.phys,a.unit);
-    const pago=ps.reduce((n,p)=>n+Number(p.paid_value||0),0), receb=ps.reduce((n,p)=>n+Number(p.received_value||0),0);
-    if(editavel){
-      const pay=state.payments.find(p=>p.physician_id===a.phys&&p.unit_id===a.unit&&p.competence===state.month+'-01')||{};
-      return `<tr><td><b>${esc(physName(a.phys))}</b></td><td>${esc(unitName(a.unit))}</td><td>${a.pac}</td>
-        <td class="r">${money(a.rep)}</td>
-        <td><input type="number" step="0.01" value="${pay.paid_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','paid_value',this.value)"> ${chip(pay.paid_value,a.rep)}</td>
-        <td><input type="number" step="0.01" value="${pay.received_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','received_value',this.value)"> ${chip(pay.received_value,a.rep)}</td>
-        <td><button class="btn" title="Produção do médico" onclick="RP.flag('${a.phys}')">📨</button></td></tr>`;
-    }
-    return `<tr><td><b>${esc(physName(a.phys))}</b></td><td>${esc(unitName(a.unit))}</td><td>${a.pac}</td>
-      <td class="r">${money(a.rep)}</td><td class="r">${money(pago)} ${chip(pago,a.rep)}</td><td class="r">${money(receb)} ${chip(receb,a.rep)}</td>
-      <td><button class="btn" onclick="RP.flag('${a.phys}')">📨</button></td></tr>`;
+    const pay=payFor(a.phys,a.unit,a.comp), pc=a.comp.split('-'), c1=a.comp+'-01';
+    const pagoCell=ed?`<input type="number" step="0.01" value="${pay.paid_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','${c1}','paid_value',this.value)"> ${chip(pay.paid_value,a.rep)}`:`${money(pay.paid_value)} ${chip(pay.paid_value,a.rep)}`;
+    const recCell=ed?`<input type="number" step="0.01" value="${pay.received_value??0}" onchange="RP.pay('${a.phys}','${a.unit}','${c1}','received_value',this.value)"> ${chip(pay.received_value,a.rep)}`:`${money(pay.received_value)} ${chip(pay.received_value,a.rep)}`;
+    return `<tr><td><b>${esc(physName(a.phys))}</b></td><td>${esc(unitName(a.unit))}</td><td>${MES[parseInt(pc[1])-1]}/${pc[0]}</td><td>${a.pac}</td>
+      <td class="r">${money(a.rep)}</td><td>${pagoCell}</td><td>${recCell}</td>
+      <td><button class="btn" title="Produção do médico (enviar)" onclick="RP.flag('${a.phys}')">📨</button></td></tr>`;
   }).join('');
   const seletor=state.mode==='mensal'
     ? `<label>Competência<input type="month" value="${state.month}" onchange="RP.mes(this.value)"></label>`
@@ -238,8 +231,8 @@ function render(){
     <div class="kpi"><div class="k">Recebido por nós</div><div class="v" style="color:var(--azul)">${money(totReceb)}</div></div>
     <div class="kpi"><div class="k">A pagar (saldo)</div><div class="v">${money(totRep-totPago)}</div></div>
   </div>
-  ${list.length?`<table><thead><tr><th>Médico</th><th>Unidade</th><th>Pac.</th><th class="r">Repasse devido</th><th${editavel?'':' class="r"'}>Pago ao médico</th><th${editavel?'':' class="r"'}>Recebido por nós</th><th></th></tr></thead><tbody>${linhas}</tbody></table>
-  ${state.mode!=='mensal'?'<p class="muted" style="margin-top:8px">No modo período, os valores pago/recebido são a soma das competências do período (edição é feita no modo Mensal).</p>':''}`
+  ${list.length?`<table><thead><tr><th>Médico</th><th>Unidade</th><th>Mês</th><th>Pac.</th><th class="r">Repasse devido</th><th>Pago ao médico</th><th>Recebido por nós</th><th></th></tr></thead><tbody>${linhas}</tbody></table>
+  <p class="muted" style="margin-top:8px">Cada linha é uma competência (mês). Você edita o pago/recebido de cada mês — assim dá pra lançar recebimento que cobre mais de uma competência.</p>`
   :'<div class="vazio">Nenhuma produção lançada no período.</div>'}`;
 }
 function renderLogin(){
