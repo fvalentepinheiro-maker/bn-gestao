@@ -23,23 +23,74 @@
   function norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   var prodCache = null, prodAt = 0;
+  var EMPTY = { services: [], byContract: {}, total: { teto: 0, exec: 0 } };
   async function getProd() {
     if (prodCache && Date.now() - prodAt < 12000) return prodCache;
-    var s = sess(); if (!s) return [];
+    var s = sess(); if (!s) return EMPTY;
     var h = { apikey: KEY, Authorization: 'Bearer ' + s.access_token };
     try {
       var res = await Promise.all([
-        fetch(API + '/rest/v1/cm_contracts?select=id,contract_number', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_contracts?select=id,contract_number,supplier_name', { headers: h }).then(function (r) { return r.json(); }),
         fetch(API + '/rest/v1/cm_schedule_units?select=id,name,contract_id,teto_qtd', { headers: h }).then(function (r) { return r.json(); }),
-        fetch(API + '/rest/v1/cm_schedule_slots?select=unit_id,patients,status', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_slots?select=unit_id,contract_id,patients,status', { headers: h }).then(function (r) { return r.json(); }),
       ]);
       var cs = Array.isArray(res[0]) ? res[0] : [], us = Array.isArray(res[1]) ? res[1] : [], sl = Array.isArray(res[2]) ? res[2] : [];
-      var num = {}; cs.forEach(function (c) { num[c.id] = c.contract_number; });
-      var execU = {};
-      sl.forEach(function (x) { if ((x.status === 'preenchido' || x.status === 'confirmado') && x.unit_id) execU[x.unit_id] = (execU[x.unit_id] || 0) + Number(x.patients || 0); });
+      var num = {}, sup = {}; cs.forEach(function (c) { num[c.id] = c.contract_number; sup[c.id] = c.supplier_name; });
+      var execU = {}, execC = {}, tetoC = {};
+      sl.forEach(function (x) {
+        if (x.status !== 'preenchido' && x.status !== 'confirmado') return;
+        if (x.unit_id) execU[x.unit_id] = (execU[x.unit_id] || 0) + Number(x.patients || 0);
+        if (x.contract_id) execC[x.contract_id] = (execC[x.contract_id] || 0) + Number(x.patients || 0);
+      });
+      us.forEach(function (u) { if (u.contract_id && u.teto_qtd) tetoC[u.contract_id] = (tetoC[u.contract_id] || 0) + Number(u.teto_qtd); });
       var services = us.filter(function (u) { return u.teto_qtd; }).map(function (u) { return { name: u.name, teto: Number(u.teto_qtd), exec: execU[u.id] || 0, contr: num[u.contract_id] || '' }; });
-      prodCache = services; prodAt = Date.now(); return services;
-    } catch (e) { return []; }
+      var byContract = {}, totT = 0, totE = 0;
+      Object.keys(tetoC).forEach(function (id) {
+        var o = { teto: tetoC[id], exec: execC[id] || 0 };
+        totT += o.teto; totE += o.exec;
+        if (num[id]) byContract[norm(num[id])] = o;
+        if (sup[id]) byContract[norm(sup[id])] = o;
+      });
+      prodCache = { services: services, byContract: byContract, total: { teto: totT, exec: totE } };
+      prodAt = Date.now(); return prodCache;
+    } catch (e) { return EMPTY; }
+  }
+
+  // Sobrepõe a coluna "Uso do contrato" com produção/teto (tabelas que mostram inativos também)
+  function augmentUsage(byC) {
+    if (!byC) return;
+    document.querySelectorAll('table').forEach(function (tbl) {
+      var ths = tbl.querySelectorAll('thead th');
+      if (!ths.length) return;
+      var heads = [].map.call(ths, function (th) { return th.textContent.trim(); });
+      var ui = heads.indexOf('Uso do contrato'); if (ui < 0) ui = heads.indexOf('Produção × teto'); if (ui < 0) ui = heads.indexOf('Uso');
+      if (ui < 0) return;
+      if (ths[ui] && ths[ui].textContent.trim() !== 'Produção × teto') ths[ui].textContent = 'Produção × teto';
+      tbl.querySelectorAll('tbody tr').forEach(function (tr) {
+        var cell = tr.children[ui]; if (!cell || cell.dataset.bnprod) return;
+        var strong = tr.querySelector('td strong'); var small = tr.querySelector('td small');
+        var p = (strong && byC[norm(strong.textContent)]) || (small && byC[norm(small.textContent)]);
+        if (!p || !p.teto) return;
+        var pct = Math.min(100, Math.round(p.exec / p.teto * 100));
+        var col = pct >= 100 ? '#0e7c5a' : pct >= 90 ? '#ea580c' : '#14688b';
+        cell.dataset.bnprod = '1';
+        cell.innerHTML = '<div style="font-weight:700;color:' + col + '">' + pct + '% <small style="color:#6b7280;font-weight:400">(' + p.exec + '/' + p.teto + ')</small></div><div style="height:6px;background:#eef2f7;border-radius:4px;margin-top:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:' + col + '"></div></div>';
+      });
+    });
+  }
+
+  // Troca o KPI "Uso financeiro dos contratos" por produção/teto total
+  function augmentKPI(total) {
+    var pct = total.teto ? Math.round(total.exec / total.teto * 100) : 0;
+    var alvo = pct + '%';
+    document.querySelectorAll('.metric').forEach(function (mdiv) {
+      var sp = mdiv.querySelector('span'); if (!sp) return;
+      var t = sp.textContent.trim();
+      if (t !== 'Uso financeiro dos contratos' && t !== 'Uso dos contratos (produção)') return;
+      if (sp.textContent.trim() !== 'Uso dos contratos (produção)') sp.textContent = 'Uso dos contratos (produção)';
+      var b = mdiv.querySelector('b'); if (b && b.textContent.trim() !== alvo) b.textContent = alvo;
+      var sm = mdiv.querySelector('small'); if (sm && sm.textContent.indexOf('atend') < 0) sm.textContent = 'Executado ÷ teto (' + total.exec + '/' + total.teto + ' atend.)';
+    });
   }
 
   function prodPanelInner(services) {
@@ -99,7 +150,10 @@
 
   async function tick() {
     var view = document.getElementById('view');
-    if (dashActive() && view) {
+    if (!view) return;
+    var onDash = dashActive();
+    // bnfin (resumo financeiro) só no painel
+    if (onDash) {
       if (!document.getElementById('bnfin') && !busy) {
         busy = true;
         try {
@@ -110,9 +164,14 @@
           }
         } finally { busy = false; }
       }
-      try {
-        getProd().then(function (services) {
-          var content = prodPanelInner(services);
+    } else { var exf = document.getElementById('bnfin'); if (exf) exf.remove(); }
+    // produção: sobrepõe a coluna de uso (qualquer tela: painel E contratos) e, no painel, o KPI + o painel de uso
+    try {
+      getProd().then(function (p) {
+        augmentUsage(p.byContract);
+        if (onDash) {
+          augmentKPI(p.total);
+          var content = prodPanelInner(p.services);
           var w = document.getElementById('bnprod');
           if (!content) { if (w) w.remove(); return; }
           if (!w) {
@@ -122,11 +181,10 @@
             if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(w, anchor.nextSibling);
             else if (view.parentNode) view.parentNode.insertBefore(w, view);
           }
-          // só reescreve quando o conteúdo muda — evita loop com o MutationObserver
           if (w.__bnsig !== content) { w.__bnsig = content; w.innerHTML = content; }
-        });
-      } catch (e) { }
-    } else { ['bnfin', 'bnprod'].forEach(function (id) { var ex = document.getElementById(id); if (ex) ex.remove(); }); }
+        } else { var exp = document.getElementById('bnprod'); if (exp) exp.remove(); }
+      });
+    } catch (e) { }
   }
 
   new MutationObserver(function () { tick(); }).observe(document.body, { childList: true, subtree: true });
