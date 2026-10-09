@@ -23,7 +23,7 @@
   function norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   var prodCache = null, prodAt = 0;
-  var EMPTY = { services: [], byContract: {}, total: { teto: 0, exec: 0 } };
+  var EMPTY = { services: [], byContract: {}, total: { teto: 0, exec: 0 }, unitResults: [], mesAmes: [] };
   async function getProd() {
     if (prodCache && Date.now() - prodAt < 12000) return prodCache;
     var s = sess(); if (!s) return EMPTY;
@@ -31,19 +31,31 @@
     try {
       var res = await Promise.all([
         fetch(API + '/rest/v1/cm_contracts?select=id,contract_number,supplier_name', { headers: h }).then(function (r) { return r.json(); }),
-        fetch(API + '/rest/v1/cm_schedule_units?select=id,name,contract_id,teto_qtd', { headers: h }).then(function (r) { return r.json(); }),
-        fetch(API + '/rest/v1/cm_schedule_slots?select=unit_id,contract_id,patients,status', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_units?select=id,name,contract_id,teto_qtd,tax_rate,display_order', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_slots?select=unit_id,contract_id,slot_date,period_key,patients,status', { headers: h }).then(function (r) { return r.json(); }),
+        fetch(API + '/rest/v1/cm_schedule_period_rates?select=unit_id,period_key,billing_per_patient,transfer_per_patient', { headers: h }).then(function (r) { return r.json(); }),
       ]);
-      var cs = Array.isArray(res[0]) ? res[0] : [], us = Array.isArray(res[1]) ? res[1] : [], sl = Array.isArray(res[2]) ? res[2] : [];
+      var cs = Array.isArray(res[0]) ? res[0] : [], us = Array.isArray(res[1]) ? res[1] : [], sl = Array.isArray(res[2]) ? res[2] : [], rt = Array.isArray(res[3]) ? res[3] : [];
       var num = {}, sup = {}; cs.forEach(function (c) { num[c.id] = c.contract_number; sup[c.id] = c.supplier_name; });
+      var rate = {}; rt.forEach(function (r) { rate[r.unit_id + '|' + r.period_key] = r; });
+      var rfor = function (uid, pk) { return rate[uid + '|' + pk] || { billing_per_patient: 0, transfer_per_patient: 0 }; };
       var execU = {}, execC = {}, tetoC = {};
+      var resU = {}, mm = {};
       sl.forEach(function (x) {
         if (x.status !== 'preenchido' && x.status !== 'confirmado') return;
-        if (x.unit_id) execU[x.unit_id] = (execU[x.unit_id] || 0) + Number(x.patients || 0);
-        if (x.contract_id) execC[x.contract_id] = (execC[x.contract_id] || 0) + Number(x.patients || 0);
+        var q = Number(x.patients || 0), r = rfor(x.unit_id, x.period_key);
+        var fat = q * Number(r.billing_per_patient || 0), rep = q * Number(r.transfer_per_patient || 0);
+        if (x.unit_id) { execU[x.unit_id] = (execU[x.unit_id] || 0) + q; var o = resU[x.unit_id] || { pac: 0, fat: 0, rep: 0 }; o.pac += q; o.fat += fat; o.rep += rep; resU[x.unit_id] = o; }
+        if (x.contract_id) execC[x.contract_id] = (execC[x.contract_id] || 0) + q;
+        var comp = (x.slot_date || '').slice(0, 7); if (comp) { var m = mm[comp] || { pac: 0, fat: 0, rep: 0 }; m.pac += q; m.fat += fat; m.rep += rep; mm[comp] = m; }
       });
       us.forEach(function (u) { if (u.contract_id && u.teto_qtd) tetoC[u.contract_id] = (tetoC[u.contract_id] || 0) + Number(u.teto_qtd); });
       var services = us.filter(function (u) { return u.teto_qtd; }).map(function (u) { return { name: u.name, teto: Number(u.teto_qtd), exec: execU[u.id] || 0, contr: num[u.contract_id] || '' }; });
+      var unitResults = us.slice().sort(function (a, b) { return (a.display_order || 0) - (b.display_order || 0); }).filter(function (u) { return resU[u.id]; }).map(function (u) {
+        var o = resU[u.id], tax = Number(u.tax_rate || 0), imp = o.fat * tax;
+        return { name: u.name, pac: o.pac, fat: o.fat, rep: o.rep, tax: tax, imp: imp, res: o.fat - o.rep - imp };
+      });
+      var mesAmes = Object.keys(mm).sort().map(function (c) { var o = mm[c]; return { comp: c, pac: o.pac, fat: o.fat, rep: o.rep, liq: o.fat - o.rep }; });
       var byContract = {}, totT = 0, totE = 0;
       Object.keys(tetoC).forEach(function (id) {
         var o = { teto: tetoC[id], exec: execC[id] || 0 };
@@ -51,9 +63,31 @@
         if (num[id]) byContract[norm(num[id])] = o;
         if (sup[id]) byContract[norm(sup[id])] = o;
       });
-      prodCache = { services: services, byContract: byContract, total: { teto: totT, exec: totE } };
+      prodCache = { services: services, byContract: byContract, total: { teto: totT, exec: totE }, unitResults: unitResults, mesAmes: mesAmes };
       prodAt = Date.now(); return prodCache;
     } catch (e) { return EMPTY; }
+  }
+
+  var MES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+  function brl(v) { return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+  function trackInner(unitResults, mesAmes) {
+    if ((!unitResults || !unitResults.length) && (!mesAmes || !mesAmes.length)) return '';
+    var cores = ['#1a4fa0', '#0e7c5a', '#14688b', '#6b46c1', '#b45309', '#be185d'];
+    var cards = (unitResults || []).map(function (u, i) {
+      var cor = cores[i % cores.length];
+      var lin = function (k, v, c) { return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:.86rem"><span style="color:#667">' + k + '</span><b' + (c ? ' style="color:' + c + '"' : '') + '>' + v + '</b></div>'; };
+      return '<div style="flex:1;min-width:230px;background:#fff;border:1px solid #dde1e8;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.05)"><div style="background:' + cor + ';color:#fff;padding:10px 14px;font-weight:700">' + esc(u.name) + '</div><div style="padding:12px 14px">'
+        + lin('Pacientes', u.pac) + lin('Faturamento', brl(u.fat), '#1a4fa0') + lin('Repasse', brl(u.rep), '#c62828') + lin('Imposto (' + (u.tax * 100).toFixed(0) + '%)', brl(u.imp), '#ea580c')
+        + '<div style="border-top:1px solid #eef2f7;margin-top:5px;padding-top:5px">' + lin('Resultado', brl(u.res), '#0e7c5a') + '</div></div></div>';
+    }).join('');
+    var mmRows = (mesAmes || []).map(function (m) { var p = m.comp.split('-'); return '<tr><td>' + MES[parseInt(p[1]) - 1] + '/' + p[0] + '</td><td class="amount">' + m.pac + '</td><td class="amount">' + brl(m.fat) + '</td><td class="amount" style="color:#c62828">' + brl(m.rep) + '</td><td class="amount" style="color:#0e7c5a">' + brl(m.liq) + '</td></tr>'; }).join('');
+    return '<div style="font-family:Inter,system-ui,sans-serif">'
+      + '<h3 style="font-size:1.05rem;color:#1a4fa0;margin:0 0 12px">Resultado por unidade de negócio <small style="color:#667;font-weight:400">(acumulado)</small></h3>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:24px">' + (cards || '<div style="color:#667">Sem produção lançada.</div>') + '</div>'
+      + '<h3 style="font-size:1.05rem;color:#1a4fa0;margin:0 0 12px">Produção mês a mês</h3>'
+      + '<div style="background:#fff;border:1px solid #dde1e8;border-radius:12px;overflow:auto;box-shadow:0 2px 8px rgba(0,0,0,.05)"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f3f6f9">'
+      + '<th style="text-align:left;padding:9px 12px;font-size:.78rem;color:#667">Mês</th><th style="text-align:right;padding:9px 12px;font-size:.78rem;color:#667">Atendimentos</th><th style="text-align:right;padding:9px 12px;font-size:.78rem;color:#667">Faturamento</th><th style="text-align:right;padding:9px 12px;font-size:.78rem;color:#667">Repasse</th><th style="text-align:right;padding:9px 12px;font-size:.78rem;color:#667">Líquido</th></tr></thead>'
+      + '<tbody>' + (mmRows || '<tr><td colspan="5" style="padding:12px;color:#667">Sem produção lançada.</td></tr>') + '</tbody></table></div></div>';
   }
 
   // Sobrepõe a coluna "Uso do contrato" com produção/teto (tabelas que mostram inativos também)
@@ -147,6 +181,7 @@
   }
 
   function dashActive() { var b = document.querySelector('[data-nav="dashboard"]'); return b && b.classList.contains('active'); }
+  function trackActive() { var b = document.querySelector('[data-nav="tracking"]'); return b && b.classList.contains('active'); }
 
   async function tick() {
     var view = document.getElementById('view');
@@ -165,24 +200,38 @@
         } finally { busy = false; }
       }
     } else { var exf = document.getElementById('bnfin'); if (exf) exf.remove(); }
-    // produção: sobrepõe a coluna de uso (qualquer tela: painel E contratos) e, no painel, o KPI + o painel de uso
+    var onTrack = trackActive();
     try {
       getProd().then(function (p) {
         augmentUsage(p.byContract);
+        // Painel gerencial: KPI de produção + painel de uso
         if (onDash) {
           augmentKPI(p.total);
           var content = prodPanelInner(p.services);
           var w = document.getElementById('bnprod');
-          if (!content) { if (w) w.remove(); return; }
-          if (!w) {
-            w = document.createElement('div'); w.id = 'bnprod';
-            w.style.cssText = 'margin:0 0 22px;font-family:Inter,system-ui,sans-serif';
-            var anchor = document.getElementById('bnfin');
-            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(w, anchor.nextSibling);
-            else if (view.parentNode) view.parentNode.insertBefore(w, view);
+          if (!content) { if (w) w.remove(); }
+          else {
+            if (!w) {
+              w = document.createElement('div'); w.id = 'bnprod';
+              w.style.cssText = 'margin:0 0 22px;font-family:Inter,system-ui,sans-serif';
+              var anchor = document.getElementById('bnfin');
+              if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(w, anchor.nextSibling);
+              else if (view.parentNode) view.parentNode.insertBefore(w, view);
+            }
+            if (w.__bnsig !== content) { w.__bnsig = content; w.innerHTML = content; }
           }
-          if (w.__bnsig !== content) { w.__bnsig = content; w.innerHTML = content; }
         } else { var exp = document.getElementById('bnprod'); if (exp) exp.remove(); }
+        // Acompanhamento mensal: resultado por unidade + produção mês a mês (esconde a grade GSER)
+        if (onTrack) {
+          view.querySelectorAll('.monthly-grid, .trackingtools').forEach(function (e) { e.style.display = 'none'; });
+          var tc = trackInner(p.unitResults, p.mesAmes);
+          var wt = document.getElementById('bntrack');
+          if (!tc) { if (wt) wt.remove(); }
+          else {
+            if (!wt) { wt = document.createElement('div'); wt.id = 'bntrack'; wt.style.cssText = 'margin:0 0 16px'; view.insertBefore(wt, view.firstChild); }
+            if (wt.__bnsig !== tc) { wt.__bnsig = tc; wt.innerHTML = tc; }
+          }
+        } else { var ext = document.getElementById('bntrack'); if (ext) ext.remove(); }
       });
     } catch (e) { }
   }
