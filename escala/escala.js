@@ -79,14 +79,21 @@ async function loadProfile() {
 
 // ---- carga de dados ----
 async function loadData() {
-  const [units, rates, phys, pu, contracts] = await Promise.all([
+  const [units, rates, phys, pu, contracts, consumo] = await Promise.all([
     rows('cm_schedule_units', '&order=display_order'),
     rows('cm_schedule_period_rates'),
     rows('cm_physicians', '&order=full_name'),
     rows('cm_physician_units'),
-    rows('cm_contracts', '&select=id,contract_number,supplier_name&order=supplier_name'),
+    rows('cm_contracts', '&select=id,contract_number,supplier_name,teto_qtd,valor_norte&order=supplier_name'),
+    rows('cm_schedule_slots', '&select=contract_id,patients,status&contract_id=not.is.null'),
   ]);
   state.units = units || []; state.rates = rates || []; state.physicians = phys || []; state.physUnits = pu || []; state.contracts = contracts || [];
+  // executado acumulado por contrato (todos os meses) — para bater com o teto
+  state.consumoContrato = {};
+  for (const s of (consumo || [])) {
+    if (['preenchido', 'confirmado'].includes(s.status))
+      state.consumoContrato[s.contract_id] = (state.consumoContrato[s.contract_id] || 0) + Number(s.patients || 0);
+  }
   await loadMonth();
 }
 async function loadMonth() {
@@ -185,7 +192,24 @@ function renderGrade(el, unit) {
   const semanas = semanasDoMes(state.month);
   const diario = aggregateDaily(state.slots.filter(s => s.unit_id === unit.id), state.rates);
 
-  el.innerHTML = semanas.map(sem => {
+  // Banner: serviço × contrato × teto × executado acumulado (bate com o teto)
+  const contrato = (state.contracts || []).find(c => c.id === unit.contract_id);
+  const teto = Number(contrato?.teto_qtd || 0);
+  const exec = Number(state.consumoContrato?.[unit.contract_id] || 0);
+  const saldo = teto - exec;
+  const pct = teto ? Math.min(100, Math.round(exec / teto * 100)) : 0;
+  const cor = pct >= 100 ? 'var(--verde,#0e7c5a)' : pct >= 90 ? 'var(--laranja,#ea580c)' : 'var(--azul,#14688b)';
+  const banner = `<div class="teto-banner" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;background:#fff;border:1px solid #dde1e8;border-left:4px solid ${cor};border-radius:10px;padding:12px 16px;margin-bottom:16px">
+    <div><div style="font-size:.72rem;color:#6b7280">Serviço</div><b>${esc(unit.name)}</b></div>
+    <div><div style="font-size:.72rem;color:#6b7280">Contrato</div><b>${esc(contrato?.contract_number || '— sem contrato —')}</b></div>
+    <div><div style="font-size:.72rem;color:#6b7280">Teto (atend.)</div><b>${teto || '—'}</b></div>
+    <div><div style="font-size:.72rem;color:#6b7280">Executado acumulado</div><b>${exec}</b></div>
+    <div><div style="font-size:.72rem;color:#6b7280">Saldo</div><b style="color:${saldo < 0 ? 'var(--vermelho,#c62828)' : 'inherit'}">${teto ? saldo : '—'}</b></div>
+    <div style="flex:1;min-width:120px"><div style="font-size:.72rem;color:#6b7280">Consumo do teto <b style="color:${cor}">${teto ? pct + '%' : '—'}</b></div>
+      <div style="height:8px;background:#eef2f7;border-radius:5px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${pct}%;background:${cor}"></div></div></div>
+  </div>`;
+
+  el.innerHTML = banner + semanas.map(sem => {
     const totalSem = sem.days.reduce((n, d) => n + (diario.find(x => x.slot_date === d.iso)?.faturamento || 0), 0);
     return `<div class="semana">
       <div class="semana-header">
