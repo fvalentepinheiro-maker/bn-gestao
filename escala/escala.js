@@ -172,7 +172,7 @@ function render() {
       <span class="info">Competência</span>
       <input type="month" value="${state.month}" onchange="BN.mes(this.value)">
       ${canEdit() && !['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirMarcarPeriodo('${unitBySlug(state.tab)?.id}')">📅 Marcar período</button>` : ''}
-      ${!['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.gerarPDF('${unitBySlug(state.tab)?.id}')">📄 Gerar PDF faturamento</button>` : ''}
+      ${!['financeiro', 'medicos', 'servicos'].includes(state.tab) ? `<button class="btn" onclick="BN.abrirPDF('${unitBySlug(state.tab)?.id}')">📄 Gerar PDF faturamento</button>` : ''}
       ${!canEdit() ? '<span class="info" style="color:var(--laranja)">Seu perfil é somente consulta.</span>' : ''}
     </div>
     <div class="painel" id="painel"></div>`;
@@ -432,6 +432,26 @@ function abrirEditarMedico(id) {
   ov.classList.add('visivel');
 }
 
+// ---- modal: período da fatura antes de gerar o PDF ----
+function abrirPDF(unitId) {
+  const u = state.units.find(x => x.id === unitId); if (!u) { toast('Abra uma unidade.', true); return; }
+  const ini = state.month + '-01';
+  const [y, m] = state.month.split('-').map(Number);
+  const fim = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `<div class="modal">
+    <h3>Gerar fatura — ${esc(u.name)}</h3>
+    <p>Escolha o período da fatura. Só entram os dias com atendimento.</p>
+    <label>De<br><input type="date" id="pdfIni" value="${ini}"></label>
+    <label>Até<br><input type="date" id="pdfFim" value="${fim}"></label>
+    <div class="modal-acoes">
+      <button class="btn primario" onclick="BN.gerarPDF('${unitId}')">Gerar PDF</button>
+      <button class="btn" onclick="BN.fecharModal()">Cancelar</button>
+    </div>
+  </div>`;
+  ov.classList.add('visivel');
+}
+
 // ---- modal: editar serviço (teto por serviço) ----
 function abrirEditarServico(id) {
   const u = state.units.find(x => x.id === id); if (!u) return;
@@ -471,7 +491,7 @@ const BN = {
   sair() { setSession(null); state.profile = null; render(); },
   tab(k) { state.tab = k; render(); },
   async mes(v) { state.month = v; app.querySelector('#painel').innerHTML = '<div class="vazio-aviso">Carregando…</div>'; await loadMonth(); render(); },
-  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico, abrirEditarServico,
+  abrirMedico, abrirMarcarPeriodo, abrirEditarMedico, abrirEditarServico, abrirPDF,
   fecharModal() { document.getElementById('overlay').classList.remove('visivel'); },
   async salvarServico(id) {
     const nome = document.getElementById('esNome').value.trim();
@@ -581,6 +601,9 @@ const BN = {
   async gerarPDF(unitId) {
     const u = state.units.find(x => x.id === unitId);
     if (!u) { toast('Abra uma unidade.', true); return; }
+    const pIni = document.getElementById('pdfIni')?.value || null;
+    const pFim = document.getElementById('pdfFim')?.value || null;
+    this.fecharModal();
     let slots;
     try { slots = await rows('cm_schedule_slots', '&unit_id=eq.' + unitId + '&order=slot_date.asc'); }
     catch (e) { toast(e.message, true); return; }
@@ -588,6 +611,8 @@ const BN = {
     const byd = {};
     for (const s of slots) {
       if (!['preenchido', 'confirmado'].includes(s.status)) continue;
+      if (pIni && s.slot_date < pIni) continue;
+      if (pFim && s.slot_date > pFim) continue;
       const d = s.slot_date; byd[d] = byd[d] || { m: 0, t: 0 };
       const q = Number(s.patients || 0);
       if (s.period_key === 'manha') byd[d].m += q; else byd[d].t += q; // tarde + extra entram na tarde
